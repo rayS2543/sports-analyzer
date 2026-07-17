@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 
 export default function MatchesTable() {
   const [matches, setMatches] = useState([]);
@@ -6,14 +7,24 @@ export default function MatchesTable() {
   useEffect(() => {
     fetch("http://127.0.0.1:5000/matches")
       .then((res) => res.json())
-      .then((data) => setMatches(data))
-      .catch((err) => console.error("Error fetching matches:", err));
+      .then((data) => {
+        if (Array.isArray(data)) {
+          setMatches(data);
+        } else {
+          console.error("Unexpected data format:", data);
+          setMatches([]);
+        }
+      })
+      .catch((err) => {
+        console.error("Error fetching matches:", err);
+        setMatches([]);
+      });
   }, []);
   
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-white p-8">
       <h1 className="text-5xl font-bold text-center mb-12">
-        ⚽ La Liga Match Tracker
+        La Liga Match Tracker
       </h1>
       <div className="max-w-7xl mx-auto bg-gray-800/60 rounded-3xl p-8 shadow-2xl">
         <table className="w-full border-collapse">
@@ -27,14 +38,22 @@ export default function MatchesTable() {
             </tr>
           </thead>
           <tbody>
-            {matches.map((m, idx) => (
+            {Array.isArray(matches) && matches.map((m, idx) => (
               <tr
                 key={idx}
                 className="border-b border-gray-600 hover:bg-blue-600/20"
               >
                 <td className="px-8 py-6 text-base">{m.date}</td>
-                <td className="px-8 py-6 text-base font-semibold">{m.home}</td>
-                <td className="px-8 py-6 text-base font-semibold">{m.away}</td>
+                <td className="px-8 py-6 text-base font-semibold">
+                  <Link to={`/team/${m.home}`} className="hover:underline text-blue-400">
+                    {m.home}
+                  </Link>
+                </td>
+                <td className="px-8 py-6 text-base font-semibold">
+                  <Link to={`/team/${m.away}`} className="hover:underline text-blue-400">
+                    {m.away}
+                  </Link>
+                </td>
                 <td className="px-8 py-6 text-center text-xl font-bold">{m.score}</td>
                 <td
                   className={`px-8 py-6 text-center text-base font-bold ${
