@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import TeamBadge from "./TeamBadge";
 
 export default function MatchesTable({ league, leagueName }) {
   const [matches, setMatches] = useState([]);
@@ -24,41 +25,48 @@ export default function MatchesTable({ league, leagueName }) {
   }, [league]);
 
   return (
-    <div className="max-w-7xl mx-auto bg-gray-800/60 rounded-3xl p-8 shadow-2xl">
-      <h1 className="text-3xl font-bold mb-6">
+    <div className="max-w-5xl mx-auto w-full bg-slate-900/70 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-lg shadow-black/20">
+      <h2 className="text-xl font-bold mb-6">
         ⚽ {leagueName ? `${leagueName} Match Tracker` : "Match Tracker"}
-      </h1>
+      </h2>
       {error ? (
-        <p className="text-lg font-semibold text-red-400">{error}</p>
+        <p className="text-base font-semibold text-rose-400">{error}</p>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full border-collapse">
+          <table className="w-full border-collapse text-sm">
             <thead>
-              <tr className="bg-blue-600">
-                <th className="px-8 py-5 text-left text-lg font-bold border-b-4 border-gray-600">Date</th>
-                <th className="px-8 py-5 text-left text-lg font-bold border-b-4 border-gray-600">Home Team</th>
-                <th className="px-8 py-5 text-left text-lg font-bold border-b-4 border-gray-600">Away Team</th>
-                <th className="px-8 py-5 text-center text-lg font-bold border-b-4 border-gray-600">Score</th>
-                <th className="px-8 py-5 text-center text-lg font-bold border-b-4 border-gray-600">Winner</th>
+              <tr className="bg-slate-800/80 text-slate-300">
+                <th className="px-4 py-3 text-left font-semibold border-b border-slate-700">Date</th>
+                <th className="px-4 py-3 text-left font-semibold border-b border-slate-700">Home Team</th>
+                <th className="px-4 py-3 text-left font-semibold border-b border-slate-700">Away Team</th>
+                <th className="px-4 py-3 text-center font-semibold border-b border-slate-700">Score</th>
+                <th className="px-4 py-3 text-center font-semibold border-b border-slate-700">Winner</th>
               </tr>
             </thead>
             <tbody>
               {matches.map((m, idx) => (
-                <tr
-                  key={idx}
-                  className="border-b border-gray-600 hover:bg-blue-600/20"
-                >
-                  <td className="px-8 py-6 text-base">{m.date}</td>
-                  <td className="px-8 py-6 text-base font-semibold">{m.home}</td>
-                  <td className="px-8 py-6 text-base font-semibold">{m.away}</td>
-                  <td className="px-8 py-6 text-center text-xl font-bold">{m.score}</td>
+                <tr key={idx} className="border-b border-slate-800 hover:bg-slate-800/40">
+                  <td className="px-4 py-3 text-slate-400">{m.date}</td>
+                  <td className="px-4 py-3 font-semibold">
+                    <div className="flex items-center gap-2">
+                      <TeamBadge name={m.home} size="sm" />
+                      {m.home}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 font-semibold">
+                    <div className="flex items-center gap-2">
+                      <TeamBadge name={m.away} size="sm" />
+                      {m.away}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-center text-base font-bold tabular-nums">{m.score}</td>
                   <td
-                    className={`px-8 py-6 text-center text-base font-bold ${
+                    className={`px-4 py-3 text-center font-bold ${
                       m.winner === "Draw"
-                        ? "text-yellow-300"
+                        ? "text-amber-400"
                         : m.winner === m.home
-                        ? "text-green-400"
-                        : "text-red-400"
+                        ? "text-emerald-400"
+                        : "text-rose-400"
                     }`}
                   >
                     {m.winner}

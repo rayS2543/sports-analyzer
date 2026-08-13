@@ -13,6 +13,40 @@ def list_leagues():
     return jsonify([{"code": code, **info} for code, info in LEAGUES.items()])
 
 
+@football_bp.route("/matches/today")
+def get_todays_matches():
+    """Today's fixtures across every supported league, tagged with league info.
+
+    Loops per league (rather than one combined call) so a single league
+    being unavailable on the current API plan doesn't take down the rest.
+    """
+    today = datetime.utcnow().date().isoformat()
+
+    all_matches = []
+    for code, info in LEAGUES.items():
+        try:
+            data = get("/matches", params={"competitions": code, "dateFrom": today, "dateTo": today})
+        except FootballDataError:
+            continue
+
+        for match in data.get("matches", []):
+            all_matches.append(
+                {
+                    "league_code": code,
+                    "league_name": info["name"],
+                    "home": match["homeTeam"]["name"],
+                    "away": match["awayTeam"]["name"],
+                    "home_score": match["score"]["fullTime"]["home"],
+                    "away_score": match["score"]["fullTime"]["away"],
+                    "status": match["status"],
+                    "kickoff": match["utcDate"],
+                }
+            )
+
+    all_matches.sort(key=lambda m: m["kickoff"])
+    return jsonify(all_matches)
+
+
 @football_bp.route("/matches")
 def get_matches():
     league = request.args.get("league", DEFAULT_LEAGUE)

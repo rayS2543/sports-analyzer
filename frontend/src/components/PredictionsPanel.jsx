@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import TeamBadge from "./TeamBadge";
 
 export default function PredictionsPanel({ league }) {
   const [predictions, setPredictions] = useState([]);
@@ -26,57 +27,61 @@ export default function PredictionsPanel({ league }) {
   }, [league]);
 
   return (
-    <div className="max-w-7xl mx-auto bg-gray-800/60 rounded-3xl p-8 shadow-2xl mt-8">
-      <h2 className="text-3xl font-bold text-center mb-8">🔮 Upcoming Fixture Predictions</h2>
+    <div className="max-w-5xl mx-auto w-full bg-slate-900/70 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-lg shadow-black/20">
+      <h2 className="text-xl font-bold mb-6">🔮 Upcoming Fixture Predictions</h2>
 
-      {error && (
-        <p className="text-center text-red-400 text-lg font-semibold py-6">{error}</p>
-      )}
+      {error && <p className="font-semibold text-rose-400">{error}</p>}
 
-      {!error && predictions.length === 0 && (
-        <p className="text-center text-gray-400 text-lg py-6">No upcoming fixtures found.</p>
-      )}
+      {!error && predictions.length === 0 && <p className="text-slate-400">No upcoming fixtures found.</p>}
 
       {!error && predictions.length > 0 && (
-        <table className="w-full border-collapse">
-          <thead>
-            <tr className="bg-blue-600">
-              <th className="px-8 py-5 text-left text-lg font-bold border-b-4 border-gray-600">Date</th>
-              <th className="px-8 py-5 text-left text-lg font-bold border-b-4 border-gray-600">Home</th>
-              <th className="px-8 py-5 text-left text-lg font-bold border-b-4 border-gray-600">Away</th>
-              <th className="px-8 py-5 text-center text-lg font-bold border-b-4 border-gray-600">Predicted Winner</th>
-              <th className="px-8 py-5 text-center text-lg font-bold border-b-4 border-gray-600">Win Probability</th>
-            </tr>
-          </thead>
-          <tbody>
-            {predictions.map((p, idx) => (
-              <tr key={idx} className="border-b border-gray-600 hover:bg-blue-600/20">
-                <td className="px-8 py-6 text-base">{p.date}</td>
-                <td className="px-8 py-6 text-base font-semibold">{p.home}</td>
-                <td className="px-8 py-6 text-base font-semibold">{p.away}</td>
-                <td className="px-8 py-6 text-center text-base font-bold text-green-400">
-                  {p.predicted_winner}
-                </td>
-                <td className="px-8 py-6 text-center text-base">
-                  <div className="flex items-center gap-2">
-                    <span className="w-28 text-right">{p.home}: {p.home_win_pct}%</span>
-                    <div className="flex-1 h-3 rounded-full bg-gray-700 overflow-hidden flex min-w-[6rem]">
-                      <div
-                        className="h-full bg-blue-500"
-                        style={{ width: `${p.home_win_pct}%` }}
-                      />
-                      <div
-                        className="h-full bg-red-500"
-                        style={{ width: `${p.away_win_pct}%` }}
-                      />
-                    </div>
-                    <span className="w-28 text-left">{p.away}: {p.away_win_pct}%</span>
-                  </div>
-                </td>
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="bg-slate-800/80 text-slate-300">
+                <th className="px-4 py-3 text-left font-semibold border-b border-slate-700">Date</th>
+                <th className="px-4 py-3 text-left font-semibold border-b border-slate-700">Home</th>
+                <th className="px-4 py-3 text-left font-semibold border-b border-slate-700">Away</th>
+                <th className="px-4 py-3 text-center font-semibold border-b border-slate-700">Predicted Winner</th>
+                <th className="px-4 py-3 text-center font-semibold border-b border-slate-700">Win Probability</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {predictions.map((p, idx) => (
+                <tr key={idx} className="border-b border-slate-800 hover:bg-slate-800/40">
+                  <td className="px-4 py-3 text-slate-400">{p.date}</td>
+                  <td className="px-4 py-3 font-semibold">
+                    <div className="flex items-center gap-2">
+                      <TeamBadge name={p.home} size="sm" />
+                      {p.home}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 font-semibold">
+                    <div className="flex items-center gap-2">
+                      <TeamBadge name={p.away} size="sm" />
+                      {p.away}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-center font-bold text-emerald-400">{p.predicted_winner}</td>
+                  <td className="px-4 py-3 text-center">
+                    <div className="flex items-center gap-2">
+                      <span className="w-24 text-right text-xs text-slate-400">
+                        {p.home}: {p.home_win_pct}%
+                      </span>
+                      <div className="flex-1 h-2 rounded-full bg-slate-800 overflow-hidden flex min-w-[6rem]">
+                        <div className="h-full bg-violet-500" style={{ width: `${p.home_win_pct}%` }} />
+                        <div className="h-full bg-rose-500" style={{ width: `${p.away_win_pct}%` }} />
+                      </div>
+                      <span className="w-24 text-left text-xs text-slate-400">
+                        {p.away}: {p.away_win_pct}%
+                      </span>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
