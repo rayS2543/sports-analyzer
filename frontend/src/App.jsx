@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import LeagueSelector from "./components/LeagueSelector";
 import StandingsTable from "./components/StandingsTable";
 import MatchesTable from "./components/MatchesTable";
+import PredictionsPanel from "./components/PredictionsPanel";
 
 export default function App() {
   const [selectedLeague, setSelectedLeague] = useState("PD");
@@ -25,7 +26,7 @@ export default function App() {
       <div className="flex flex-col gap-12">
         <StandingsTable league={selectedLeague} />
         <MatchesTable league={selectedLeague} leagueName={selectedLeagueName} />
-        {/* PredictionsPanel will be added here in a follow-up merge */}
+        <PredictionsPanel league={selectedLeague} />
       </div>
     </div>
   );
