@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import LeagueChips from "./LeagueChips";
 import TeamBadge from "./TeamBadge";
+import { encodeMatchId } from "../matchId";
 
 const LIVE_STATUSES = new Set(["IN_PLAY", "PAUSED", "LIVE"]);
 const NON_TIME_LABEL = {
@@ -18,6 +20,7 @@ export default function TodayGames() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [selectedLeagues, setSelectedLeagues] = useState([]);
+  const navigate = useNavigate();
 
   useEffect(() => {
     setLoading(true);
@@ -63,7 +66,23 @@ export default function TodayGames() {
           const isLive = LIVE_STATUSES.has(m.status);
           const isFinished = m.status === "FINISHED";
           return (
-            <div key={idx} className="flex items-center gap-4 py-4">
+            <div
+              key={idx}
+              onClick={
+                isFinished
+                  ? () =>
+                      navigate(
+                        `/match/${encodeMatchId({
+                          league: m.league_code,
+                          date: m.kickoff.slice(0, 10),
+                          home: m.home,
+                          away: m.away,
+                        })}`
+                      )
+                  : undefined
+              }
+              className={`flex items-center gap-4 py-4 ${isFinished ? "cursor-pointer hover:bg-slate-800/40 rounded-lg px-2 -mx-2" : ""}`}
+            >
               <span className="text-[11px] font-semibold text-slate-500 w-14 uppercase tracking-wide shrink-0">{m.league_code}</span>
 
               <div className="flex-1 flex items-center gap-3 min-w-0">

@@ -1,9 +1,12 @@
 import React, { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import TeamBadge from "./TeamBadge";
+import { encodeMatchId } from "../matchId";
 
 export default function MatchesTable({ league, leagueName }) {
   const [matches, setMatches] = useState([]);
   const [error, setError] = useState(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     setError(null);
@@ -45,7 +48,11 @@ export default function MatchesTable({ league, leagueName }) {
             </thead>
             <tbody>
               {matches.map((m, idx) => (
-                <tr key={idx} className="border-b border-slate-800 hover:bg-slate-800/40">
+                <tr
+                  key={idx}
+                  onClick={() => navigate(`/match/${encodeMatchId({ league, date: m.date, home: m.home, away: m.away })}`)}
+                  className="border-b border-slate-800 hover:bg-slate-800/40 cursor-pointer"
+                >
                   <td className="px-4 py-3 text-slate-400">{m.date}</td>
                   <td className="px-4 py-3 font-semibold">
                     <div className="flex items-center gap-2">

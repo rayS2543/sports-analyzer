@@ -29,8 +29,14 @@ function initialsFor(name, tla) {
     .toUpperCase();
 }
 
+const SIZE_CLASSES = {
+  sm: "w-7 h-7 text-[10px]",
+  md: "w-9 h-9 text-xs",
+  lg: "w-20 h-20 text-2xl",
+};
+
 export default function TeamBadge({ name, tla, size = "md" }) {
-  const sizeClasses = size === "sm" ? "w-7 h-7 text-[10px]" : "w-9 h-9 text-xs";
+  const sizeClasses = SIZE_CLASSES[size] || SIZE_CLASSES.md;
   return (
     <span
       className={`inline-flex items-center justify-center rounded-full font-bold text-white shrink-0 ${sizeClasses} ${colorFor(name)}`}

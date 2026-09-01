@@ -32,6 +32,7 @@ def get_todays_matches():
         for match in data.get("matches", []):
             all_matches.append(
                 {
+                    "id": match["id"],
                     "league_code": code,
                     "league_name": info["name"],
                     "home": match["homeTeam"]["name"],
@@ -85,6 +86,7 @@ def get_matches():
             home_points, away_points = 1, 1
         cleanedData.append(
             {
+                "id": match["id"],
                 "home": match["homeTeam"]["name"],
                 "away": match["awayTeam"]["name"],
                 "score": f"{home_score} - {away_score}",
