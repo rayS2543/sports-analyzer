@@ -1,14 +1,23 @@
+import itertools
 import json
 from unittest.mock import patch
 
 import pytest
 
+_match_ids = itertools.count(1)
+
 
 class FakeResponse:
-    """Minimal stand-in for requests.Response, only needs .json()."""
+    """Minimal stand-in for requests.Response.
 
-    def __init__(self, payload):
+    football_client.get() checks .status_code/.ok before calling .json(),
+    so this needs those too, not just .json().
+    """
+
+    def __init__(self, payload, status_code=200):
         self._payload = payload
+        self.status_code = status_code
+        self.ok = status_code < 400
 
     def json(self):
         return self._payload
@@ -16,6 +25,7 @@ class FakeResponse:
 
 def make_match(home, away, home_score, away_score, date):
     return {
+        "id": next(_match_ids),
         "homeTeam": {"name": home},
         "awayTeam": {"name": away},
         "score": {"fullTime": {"home": home_score, "away": away_score}},
@@ -41,15 +51,17 @@ def test_home_returns_running_message(client):
 
 
 def test_matches_computes_winner_and_points_for_home_win(client):
-    payload = {"matches": [make_match("Real Madrid", "Barcelona", 3, 1, "2024-01-05")]}
+    match = make_match("Real Madrid", "Barcelona", 3, 1, "2024-01-05")
+    payload = {"matches": [match]}
 
-    with patch("backend.app.requests.get", return_value=FakeResponse(payload)):
+    with patch("football_client.requests.get", return_value=FakeResponse(payload)):
         resp = client.get("/matches")
 
     assert resp.status_code == 200
     data = resp.get_json()
     assert data == [
         {
+            "id": match["id"],
             "home": "Real Madrid",
             "away": "Barcelona",
             "score": "3 - 1",
@@ -64,7 +76,7 @@ def test_matches_computes_winner_and_points_for_home_win(client):
 def test_matches_computes_winner_and_points_for_away_win(client):
     payload = {"matches": [make_match("Sevilla", "Valencia", 0, 2, "2024-01-06")]}
 
-    with patch("backend.app.requests.get", return_value=FakeResponse(payload)):
+    with patch("football_client.requests.get", return_value=FakeResponse(payload)):
         resp = client.get("/matches")
 
     data = resp.get_json()
@@ -76,7 +88,7 @@ def test_matches_computes_winner_and_points_for_away_win(client):
 def test_matches_computes_draw(client):
     payload = {"matches": [make_match("Betis", "Getafe", 1, 1, "2024-01-07")]}
 
-    with patch("backend.app.requests.get", return_value=FakeResponse(payload)):
+    with patch("football_client.requests.get", return_value=FakeResponse(payload)):
         resp = client.get("/matches")
 
     data = resp.get_json()
@@ -94,7 +106,7 @@ def test_matches_are_sorted_by_date_then_team_names(client):
         ]
     }
 
-    with patch("backend.app.requests.get", return_value=FakeResponse(payload)):
+    with patch("football_client.requests.get", return_value=FakeResponse(payload)):
         resp = client.get("/matches")
 
     data = resp.get_json()
@@ -109,7 +121,7 @@ def test_matches_are_sorted_by_date_then_team_names(client):
 def test_matches_date_is_truncated_to_day(client):
     payload = {"matches": [make_match("Girona", "Osasuna", 2, 0, "2024-03-09")]}
 
-    with patch("backend.app.requests.get", return_value=FakeResponse(payload)):
+    with patch("football_client.requests.get", return_value=FakeResponse(payload)):
         resp = client.get("/matches")
 
     assert resp.get_json()[0]["date"] == "2024-03-09"
@@ -118,7 +130,7 @@ def test_matches_date_is_truncated_to_day(client):
 def test_matches_returns_500_on_unexpected_api_response(client):
     payload = {"message": "Restricted"}
 
-    with patch("backend.app.requests.get", return_value=FakeResponse(payload)):
+    with patch("football_client.requests.get", return_value=FakeResponse(payload)):
         resp = client.get("/matches")
 
     assert resp.status_code == 500
@@ -145,7 +157,7 @@ def test_teams_returns_cleaned_team_list(client):
         ]
     }
 
-    with patch("backend.app.requests.get", return_value=FakeResponse(payload)):
+    with patch("football_client.requests.get", return_value=FakeResponse(payload)):
         resp = client.get("/teams")
 
     assert resp.status_code == 200
@@ -162,7 +174,7 @@ def test_teams_returns_cleaned_team_list(client):
 def test_teams_returns_500_on_unexpected_api_response(client):
     payload = {"message": "Restricted"}
 
-    with patch("backend.app.requests.get", return_value=FakeResponse(payload)):
+    with patch("football_client.requests.get", return_value=FakeResponse(payload)):
         resp = client.get("/teams")
 
     assert resp.status_code == 500
@@ -206,7 +218,7 @@ def test_standings_uses_total_table_and_orders_by_position(client):
         ]
     }
 
-    with patch("backend.app.requests.get", return_value=FakeResponse(payload)):
+    with patch("football_client.requests.get", return_value=FakeResponse(payload)):
         resp = client.get("/standings")
 
     assert resp.status_code == 200
@@ -225,7 +237,7 @@ def test_standings_falls_back_to_first_table_when_no_total(client):
         ]
     }
 
-    with patch("backend.app.requests.get", return_value=FakeResponse(payload)):
+    with patch("football_client.requests.get", return_value=FakeResponse(payload)):
         resp = client.get("/standings")
 
     assert resp.status_code == 200
@@ -236,7 +248,7 @@ def test_standings_falls_back_to_first_table_when_no_total(client):
 def test_standings_returns_500_on_unexpected_api_response(client):
     payload = {"message": "Restricted"}
 
-    with patch("backend.app.requests.get", return_value=FakeResponse(payload)):
+    with patch("football_client.requests.get", return_value=FakeResponse(payload)):
         resp = client.get("/standings")
 
     assert resp.status_code == 500
