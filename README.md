@@ -1,64 +1,108 @@
-# Sports Analyzer
+# ⚽ Sports Analyzer
 
-FastAPI backend paired with a Vite + React + Tailwind CSS frontend for experimenting with lightweight sports analytics.
+[![CI](https://github.com/rayS2543/sports-analyzer/actions/workflows/ci.yml/badge.svg)](https://github.com/rayS2543/sports-analyzer/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Prerequisites
+A full-stack La Liga analytics app: a Flask API that normalizes data from
+[football-data.org](https://www.football-data.org/) and a React + Tailwind
+frontend for browsing recent results, the live table, and club info.
 
-- Python 3.10 or newer
-- Node.js 18+ and npm 9+
+## Features
 
-## Backend setup
+- **Recent matches** — last 10 days of finished La Liga fixtures, with
+  computed winner and points earned per side.
+- **Standings** — the current league table (played, W/D/L, goal difference,
+  points).
+- **Teams** — club directory with crests.
+- In-memory response caching on the backend to stay within the upstream
+  API's rate limit.
+- Backend and frontend test suites wired into CI on every push and PR.
 
-1. Create and activate a virtual environment:
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   ```
-2. Install dependencies:
-   ```bash
-   pip install -r backend/requirements.txt
-   ```
-3. Start the FastAPI server:
-   ```bash
-   uvicorn backend.app:app --reload
-   ```
-4. The API is available at `http://127.0.0.1:8000` with automatic docs at `/docs`.
+## Tech stack
 
-### Environment variables
-
-Copy `backend/.env` and update the placeholders. The server reads environment values via `python-dotenv`.
-
-## Frontend setup
-
-1. Install dependencies:
-   ```bash
-   cd frontend
-   npm install
-   ```
-2. Run the dev server:
-   ```bash
-   npm run dev
-   ```
-3. The Vite server defaults to `http://127.0.0.1:5173`. It expects the backend at `http://127.0.0.1:8000`. Override with `VITE_API_BASE_URL` in a `.env.local`.
+| Layer    | Tools |
+|----------|-------|
+| Backend  | Python, Flask, Flask-CORS, Requests, pytest |
+| Frontend | React 18, React Router, Vite, Tailwind CSS, Vitest, Testing Library |
+| CI       | GitHub Actions |
 
 ## Project structure
 
 ```
 sports-analyzer/
 ├── backend/
-│   ├── app.py
+│   ├── app.py                # Flask app: /matches, /standings, /teams, /health
 │   ├── requirements.txt
-│   └── .env
+│   ├── requirements-dev.txt
+│   ├── .env.example
+│   └── tests/
 ├── frontend/
-│   ├── package.json
-│   ├── index.html
 │   ├── src/
-│   │   ├── App.jsx
-│   │   ├── main.jsx
-│   │   └── index.css
-│   ├── tailwind.config.js
-│   └── vite.config.js
-└── README.md
+│   │   ├── App.jsx           # routes: Matches / Standings / Teams
+│   │   ├── api.js            # thin fetch client for the backend
+│   │   └── components/
+│   ├── package.json
+│   └── vite.config.mjs
+└── .github/workflows/ci.yml
 ```
 
-Feel free to replace the sample stat payload in the React app with real data and extend the backend with richer analytics or persistence.
+## Getting started
+
+### Prerequisites
+
+- Python 3.10+
+- Node.js 18+ and npm 9+
+- A free API key from [football-data.org](https://www.football-data.org/client/register)
+
+### Backend setup
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+
+cp backend/.env.example backend/.env   # then add your FOOTBALL_API_KEY
+
+python -m flask --app backend.app run --debug
+```
+
+The API is available at `http://127.0.0.1:5000`.
+
+| Endpoint     | Description                                  |
+|--------------|-----------------------------------------------|
+| `GET /health`| Liveness check                                |
+| `GET /matches`  | Finished La Liga matches from the last 10 days |
+| `GET /teams`    | Club directory                                |
+| `GET /standings`| Current league table                          |
+
+### Frontend setup
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The Vite dev server runs at `http://127.0.0.1:5173` and expects the backend
+at `http://127.0.0.1:5000`. Override with `VITE_API_BASE_URL` in a
+`frontend/.env.local` if needed.
+
+## Testing
+
+```bash
+# backend
+pip install -r backend/requirements-dev.txt
+pytest
+
+# frontend
+cd frontend
+npm test
+npm run lint
+```
+
+Both suites run automatically in CI (see `.github/workflows/ci.yml`).
+
+## Notes on secrets
+
+`backend/.env` is git-ignored — never commit real API keys. Use
+`backend/.env.example` as the template for local setup.
