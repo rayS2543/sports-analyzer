@@ -5,10 +5,11 @@ import pytest
 
 
 class FakeResponse:
-    """Minimal stand-in for requests.Response, only needs .json()."""
+    """Minimal stand-in for requests.Response, only needs .json()/status_code."""
 
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200):
         self._payload = payload
+        self.status_code = status_code
 
     def json(self):
         return self._payload
@@ -241,3 +242,110 @@ def test_standings_returns_500_on_unexpected_api_response(client):
 
     assert resp.status_code == 500
     assert resp.get_json()["error"] == "Unexpected API response"
+
+
+# ---------------------------------------------------------------------------
+# ?competition= support
+# ---------------------------------------------------------------------------
+
+
+def test_matches_uses_competition_query_param_in_upstream_url(client):
+    payload = {"matches": [make_match("Bayern", "Dortmund", 2, 0, "2024-01-05")]}
+
+    with patch(
+        "backend.app.requests.get", return_value=FakeResponse(payload)
+    ) as mocked_get:
+        resp = client.get("/matches?competition=bl1")
+
+    assert resp.status_code == 200
+    called_url = mocked_get.call_args[0][0]
+    assert "competitions=BL1" in called_url
+
+
+def test_matches_falls_back_to_default_competition_for_unknown_code(client):
+    payload = {"matches": [make_match("A", "B", 1, 0, "2024-01-05")]}
+
+    with patch(
+        "backend.app.requests.get", return_value=FakeResponse(payload)
+    ) as mocked_get:
+        resp = client.get("/matches?competition=NOT_REAL")
+
+    assert resp.status_code == 200
+    called_url = mocked_get.call_args[0][0]
+    assert "competitions=PD" in called_url
+
+
+# ---------------------------------------------------------------------------
+# Caching / rate-limit fallback
+# ---------------------------------------------------------------------------
+
+
+def test_matches_second_request_is_served_from_cache_without_hitting_upstream(client):
+    payload = {"matches": [make_match("Real Madrid", "Barcelona", 3, 1, "2024-01-05")]}
+
+    with patch("backend.app.requests.get", return_value=FakeResponse(payload)) as mocked_get:
+        client.get("/matches")
+        client.get("/matches")
+
+    assert mocked_get.call_count == 1
+
+
+def test_matches_serves_stale_cache_when_upstream_is_rate_limited(client):
+    payload = {"matches": [make_match("Real Madrid", "Barcelona", 3, 1, "2024-01-05")]}
+
+    with patch("backend.app.requests.get", return_value=FakeResponse(payload)):
+        first = client.get("/matches")
+    assert first.status_code == 200
+
+    with patch(
+        "backend.app.requests.get",
+        return_value=FakeResponse({"message": "rate limited"}, status_code=429),
+    ):
+        with patch("backend.app.CACHE_TTL_SECONDS", 0):
+            second = client.get("/matches")
+
+    assert second.status_code == 200
+    assert second.get_json() == first.get_json()
+
+
+def test_matches_returns_429_when_rate_limited_with_no_cache(client):
+    with patch(
+        "backend.app.requests.get",
+        return_value=FakeResponse({"message": "rate limited"}, status_code=429),
+    ):
+        resp = client.get("/matches")
+
+    assert resp.status_code == 429
+
+
+# ---------------------------------------------------------------------------
+# /analytics/form/<team_name>
+# ---------------------------------------------------------------------------
+
+
+def test_form_returns_404_without_cached_history(client):
+    resp = client.get("/analytics/form/Real Madrid")
+
+    assert resp.status_code == 404
+
+
+def test_form_computes_points_and_form_string_from_persisted_matches(client):
+    payload = {
+        "matches": [
+            make_match("Real Madrid", "Barcelona", 3, 1, "2024-01-05"),
+            make_match("Sevilla", "Real Madrid", 1, 1, "2024-01-12"),
+        ]
+    }
+
+    with patch("backend.app.requests.get", return_value=FakeResponse(payload)):
+        client.get("/matches")
+
+    resp = client.get("/analytics/form/Real Madrid")
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["team"] == "Real Madrid"
+    assert data["matches_considered"] == 2
+    # Most recent match first: draw at Sevilla (1pt), then home win (3pt)
+    assert data["form"] == "DW"
+    assert data["points"] == 4

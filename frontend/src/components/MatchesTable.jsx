@@ -1,15 +1,16 @@
 import React, { useEffect, useState } from "react";
+import { API_BASE_URL } from "../api/config";
 
 export default function MatchesTable() {
   const [matches, setMatches] = useState([]);
-  
+
   useEffect(() => {
-    fetch("http://127.0.0.1:5000/matches")
+    fetch(`${API_BASE_URL}/matches`)
       .then((res) => res.json())
       .then((data) => setMatches(data))
       .catch((err) => console.error("Error fetching matches:", err));
   }, []);
-  
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-white p-8">
       <h1 className="text-5xl font-bold text-center mb-12">
