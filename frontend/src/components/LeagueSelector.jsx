@@ -19,7 +19,6 @@ export default function LeagueSelector({ league, onChange, onLeaguesLoaded }) {
         console.error("Error fetching leagues:", err);
         setError("Could not reach the backend");
       });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (

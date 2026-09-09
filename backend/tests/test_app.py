@@ -3,6 +3,7 @@ import json
 from unittest.mock import patch
 
 import pytest
+import requests
 
 _match_ids = itertools.count(1)
 
@@ -21,6 +22,9 @@ class FakeResponse:
 
     def json(self):
         return self._payload
+
+    def raise_for_status(self):
+        pass
 
 
 def make_match(home, away, home_score, away_score, date):
@@ -43,6 +47,36 @@ def test_home_returns_running_message(client):
 
     assert resp.status_code == 200
     assert resp.get_json() == {"message": "Sports Analyzer backend running"}
+
+
+def test_health_returns_ok(client):
+    resp = client.get("/health")
+
+    assert resp.status_code == 200
+    assert resp.get_json() == {"status": "ok"}
+
+
+def test_matches_returns_502_on_upstream_failure(client):
+    with patch("football_client.requests.get", side_effect=requests.ConnectionError("boom")):
+        resp = client.get("/matches")
+
+    assert resp.status_code == 502
+
+
+def test_matches_skips_fixtures_without_a_final_score(client):
+    payload = {
+        "matches": [
+            make_match("Real Madrid", "Barcelona", None, None, "2024-01-05"),
+            make_match("Sevilla", "Valencia", 1, 0, "2024-01-06"),
+        ]
+    }
+
+    with patch("football_client.requests.get", return_value=FakeResponse(payload)):
+        resp = client.get("/matches")
+
+    data = resp.get_json()
+    assert len(data) == 1
+    assert data[0]["home"] == "Sevilla"
 
 
 # ---------------------------------------------------------------------------

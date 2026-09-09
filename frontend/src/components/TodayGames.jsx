@@ -47,7 +47,7 @@ export default function TodayGames() {
     <section className="max-w-5xl mx-auto w-full bg-slate-900/70 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-lg shadow-black/20">
       <div className="flex flex-col gap-4 mb-6">
         <div className="flex items-center justify-between">
-          <h2 className="text-2xl font-bold">Today's Games</h2>
+          <h2 className="text-2xl font-bold">Today&rsquo;s Games</h2>
           <span className="text-sm text-slate-400">
             {new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}
           </span>
@@ -56,7 +56,7 @@ export default function TodayGames() {
       </div>
 
       {error && <p className="text-rose-400 font-semibold">{error}</p>}
-      {!error && loading && <p className="text-slate-400">Loading today's fixtures...</p>}
+      {!error && loading && <p className="text-slate-400">Loading today&rsquo;s fixtures...</p>}
       {!error && !loading && visible.length === 0 && (
         <p className="text-slate-400">No matches for the selected leagues today.</p>
       )}

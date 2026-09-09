@@ -20,6 +20,10 @@ def create_app():
     def home():
         return jsonify({"message": "Sports Analyzer backend running"})
 
+    @app.route("/health")
+    def health():
+        return jsonify({"status": "ok"})
+
     app.register_blueprint(football_bp)
     app.register_blueprint(predictions_bp)
     app.register_blueprint(matches_detail_bp)
