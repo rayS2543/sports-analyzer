@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 
 from flask import Blueprint, jsonify, request
 
+import db
 from football_client import FootballDataError, get
 from leagues import DEFAULT_LEAGUE, LEAGUES, get_league
 
@@ -97,6 +98,7 @@ def get_matches():
             }
         )
     cleanedData.sort(key=lambda m: (m["date"], m["home"], m["away"]))
+    db.upsert_matches(cleanedData, league)
     return jsonify(cleanedData)
 
 

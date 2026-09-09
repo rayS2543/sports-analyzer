@@ -20,6 +20,8 @@ player detail across five top European leagues.
 - **Match detail pages** with real lineups and per-player stats (via
   API-Football), and **player profile pages**.
 - **News feed** per query, pulled from Google News RSS.
+- **Team form analytics**, built from a locally persisted match history that
+  survives beyond football-data.org's rolling 10-day window.
 - In-memory response caching to stay within free-tier API rate limits.
 - Backend and frontend test suites wired into CI on every push and PR.
 
@@ -42,12 +44,14 @@ sports-analyzer/
 │   ├── api_football_client.py   # API-Football client (lineups, player stats)
 │   ├── elo.py                   # Elo rating model for predictions
 │   ├── cache.py                 # in-memory TTL cache decorator
+│   ├── db.py                    # SQLite-persisted match history for analytics
 │   ├── routes/
 │   │   ├── football.py          # /leagues, /matches, /matches/today, /teams, /standings
 │   │   ├── predictions.py       # /predictions
 │   │   ├── matches_detail.py    # /matches/detail (lineups + player stats)
 │   │   ├── players.py           # /players/<id>
-│   │   └── news.py              # /news
+│   │   ├── news.py              # /news
+│   │   └── analytics.py         # /analytics/form/<team_name>
 │   ├── requirements.txt
 │   ├── requirements-dev.txt
 │   ├── .env.example
@@ -96,6 +100,7 @@ The API is available at `http://127.0.0.1:5000`.
 | `GET /matches/detail`  | Lineups + player stats for a specific fixture           |
 | `GET /players/<id>`    | Player profile and season stats                         |
 | `GET /news?query=`     | News headlines for a search query                        |
+| `GET /analytics/form/<team_name>?league=&limit=` | Recent form (W/D/L), points, and match history for a team, from persisted history |
 
 ### Frontend setup
 
@@ -127,3 +132,9 @@ Both suites run automatically in CI (see `.github/workflows/ci.yml`).
 
 `backend/.env` is git-ignored — never commit real API keys. Use
 `backend/.env.example` as the template for local setup.
+
+## Notes on persistence
+
+Match history for `/analytics/form` is stored in a SQLite file at
+`backend/data.db` by default (git-ignored). Override the path with the
+`SPORTS_ANALYZER_DB_PATH` environment variable.
