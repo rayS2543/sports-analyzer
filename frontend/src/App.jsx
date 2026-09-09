@@ -1,19 +1,17 @@
 import React from "react";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import Navbar from "./components/Navbar";
-import MatchesTable from "./components/MatchesTable";
-import StandingsTable from "./components/StandingsTable";
-import TeamsGrid from "./components/TeamsGrid";
+import { Routes, Route } from "react-router-dom";
+import Dashboard from "./components/Dashboard";
+import MatchDetailPage from "./components/MatchDetailPage";
+import PlayerDetailPage from "./components/PlayerDetailPage";
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <Navbar />
+    <div className="min-h-screen bg-slate-950 text-slate-100">
       <Routes>
-        <Route path="/" element={<MatchesTable />} />
-        <Route path="/standings" element={<StandingsTable />} />
-        <Route path="/teams" element={<TeamsGrid />} />
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/match/:id" element={<MatchDetailPage />} />
+        <Route path="/player/:id" element={<PlayerDetailPage />} />
       </Routes>
-    </BrowserRouter>
+    </div>
   );
 }

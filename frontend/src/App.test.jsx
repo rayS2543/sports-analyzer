@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
@@ -11,11 +12,15 @@ afterEach(() => {
 });
 
 describe("App", () => {
-  it("renders the match tracker heading", () => {
-    render(<App />);
+  it("renders the Sports Analyzer heading", () => {
+    render(
+      <MemoryRouter>
+        <App />
+      </MemoryRouter>
+    );
 
     expect(
-      screen.getByRole("heading", { name: /la liga match tracker/i })
+      screen.getByRole("heading", { name: /sports analyzer/i })
     ).toBeInTheDocument();
   });
 });
