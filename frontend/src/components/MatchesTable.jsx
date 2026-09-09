@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from "react";
+import { fetchMatches } from "../api";
 
 export default function MatchesTable() {
   const [matches, setMatches] = useState([]);
-  
+
   useEffect(() => {
-    fetch("http://127.0.0.1:5000/matches")
-      .then((res) => res.json())
+    fetchMatches()
       .then((data) => setMatches(data))
       .catch((err) => console.error("Error fetching matches:", err));
   }, []);
