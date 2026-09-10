@@ -2,6 +2,8 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify
 from flask_cors import CORS
 
+import db
+from routes.analytics import analytics_bp
 from routes.football import football_bp
 from routes.matches_detail import matches_detail_bp
 from routes.news import news_bp
@@ -16,6 +18,8 @@ def create_app():
     app.config["JSON_AS_ASCII"] = False
     CORS(app)
 
+    db.init_db()
+
     @app.route("/")
     def home():
         return jsonify({"message": "Sports Analyzer backend running"})
@@ -29,6 +33,7 @@ def create_app():
     app.register_blueprint(matches_detail_bp)
     app.register_blueprint(players_bp)
     app.register_blueprint(news_bp)
+    app.register_blueprint(analytics_bp)
 
     return app
 

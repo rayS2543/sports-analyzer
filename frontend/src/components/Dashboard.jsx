@@ -4,6 +4,7 @@ import LeagueSelector from "./LeagueSelector";
 import StandingsTable from "./StandingsTable";
 import MatchesTable from "./MatchesTable";
 import PredictionsPanel from "./PredictionsPanel";
+import TeamsList from "./TeamsList";
 
 export default function Dashboard() {
   const [selectedLeague, setSelectedLeague] = useState("PD");
@@ -35,6 +36,7 @@ export default function Dashboard() {
             <StandingsTable league={selectedLeague} />
             <MatchesTable league={selectedLeague} leagueName={selectedLeagueName} />
             <PredictionsPanel league={selectedLeague} />
+            <TeamsList league={selectedLeague} />
           </div>
         </section>
       </main>

@@ -287,3 +287,60 @@ def test_standings_returns_500_on_unexpected_api_response(client):
 
     assert resp.status_code == 500
     assert resp.get_json()["error"] == "Unexpected API response"
+
+
+# ---------------------------------------------------------------------------
+# /analytics/form/<team_name>
+# ---------------------------------------------------------------------------
+
+
+def test_form_returns_404_without_prior_match_history(client):
+    resp = client.get("/analytics/form/Real Madrid")
+
+    assert resp.status_code == 404
+
+
+def test_form_returns_400_for_unknown_league(client):
+    resp = client.get("/analytics/form/Real Madrid?league=ZZ")
+
+    assert resp.status_code == 400
+
+
+def test_form_is_built_from_matches_persisted_by_a_prior_fetch(client):
+    payload = {
+        "matches": [
+            make_match("Real Madrid", "Barcelona", 3, 1, "2024-01-05"),
+            make_match("Sevilla", "Real Madrid", 0, 0, "2024-01-12"),
+        ]
+    }
+
+    with patch("football_client.requests.get", return_value=FakeResponse(payload)):
+        client.get("/matches")
+
+    resp = client.get("/analytics/form/Real Madrid")
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["team"] == "Real Madrid"
+    assert data["league"] == "PD"
+    assert data["matches_considered"] == 2
+    assert data["form"] == "DW"
+    assert data["points"] == 4
+
+
+def test_form_respects_the_limit_query_param(client):
+    payload = {
+        "matches": [
+            make_match("Real Madrid", "Barcelona", 3, 1, "2024-01-05"),
+            make_match("Sevilla", "Real Madrid", 0, 0, "2024-01-12"),
+        ]
+    }
+
+    with patch("football_client.requests.get", return_value=FakeResponse(payload)):
+        client.get("/matches")
+
+    resp = client.get("/analytics/form/Real Madrid?limit=1")
+
+    data = resp.get_json()
+    assert data["matches_considered"] == 1
+    assert data["form"] == "D"
