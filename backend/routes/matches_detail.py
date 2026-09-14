@@ -1,51 +1,46 @@
 from flask import Blueprint, jsonify, request
 
-from api_football_client import ApiFootballError, ApiFootballPlanRestrictedError, find_fixture_id, get
-from cache import cached
+from espn_client import EspnError, fetch_lineups, find_event_id
 from leagues import get_league
 
 matches_detail_bp = Blueprint("matches_detail", __name__)
 
 
-@cached(ttl_seconds=None)
-def _fetch_lineups(fixture_id):
-    return get("/fixtures/lineups", params={"fixture": fixture_id})
+def _stat_value(stats, *names):
+    for stat in stats or []:
+        if stat.get("name") in names or stat.get("abbreviation") in names:
+            return stat.get("value")
+    return None
 
 
-@cached(ttl_seconds=None)
-def _fetch_player_stats(fixture_id):
-    return get("/fixtures/players", params={"fixture": fixture_id})
+def _build_team(roster_block):
+    team = roster_block.get("team", {})
 
-
-def _build_team(lineup_block, stats_by_player):
-    team = lineup_block.get("team", {})
-
-    def build_player(entry, is_starter):
-        person = entry.get("player", {})
-        stat = stats_by_player.get(person.get("id"), {})
-        games = stat.get("games", {})
-        goals = stat.get("goals", {})
-        cards = stat.get("cards", {})
+    def build_player(entry):
+        athlete = entry.get("athlete", {})
+        position = entry.get("position") or {}
+        stats = entry.get("stats")
         return {
-            "id": person.get("id"),
-            "name": person.get("name"),
-            "number": person.get("number"),
-            "position": person.get("pos"),
-            "starter": is_starter,
-            "rating": games.get("rating"),
-            "minutes": games.get("minutes"),
-            "goals": goals.get("total") or 0,
-            "assists": goals.get("assists") or 0,
-            "yellow_cards": cards.get("yellow") or 0,
-            "red_cards": cards.get("red") or 0,
+            "id": athlete.get("id"),
+            "name": athlete.get("displayName"),
+            "number": entry.get("jersey"),
+            "position": position.get("abbreviation"),
+            "starter": bool(entry.get("starter")),
+            "rating": _stat_value(stats, "rating", "playerRating"),
+            "minutes": _stat_value(stats, "minutes", "minutesPlayed"),
+            "goals": _stat_value(stats, "goals", "totalGoals") or 0,
+            "assists": _stat_value(stats, "goalAssists", "totalAssists") or 0,
+            "yellow_cards": _stat_value(stats, "yellowCards", "totalYellowCards") or 0,
+            "red_cards": _stat_value(stats, "redCards", "totalRedCards") or 0,
         }
 
-    starters = [build_player(e, True) for e in lineup_block.get("startXI", [])]
-    bench = [build_player(e, False) for e in lineup_block.get("substitutes", [])]
+    roster = roster_block.get("roster", [])
+    starters = [build_player(e) for e in roster if e.get("starter")]
+    bench = [build_player(e) for e in roster if not e.get("starter")]
 
     return {
-        "team_name": team.get("name"),
-        "formation": lineup_block.get("formation"),
+        "team_name": team.get("displayName"),
+        "formation": roster_block.get("formation"),
         "starters": starters,
         "bench": bench,
     }
@@ -64,35 +59,23 @@ def get_match_detail():
         return jsonify({"error": f"Unknown league code '{league}'"}), 400
 
     try:
-        fixture_id = find_fixture_id(league, date, home, away)
-    except ApiFootballPlanRestrictedError as e:
-        return jsonify({"available": False, "reason": e.message})
-    except ApiFootballError as e:
+        event_id = find_event_id(league, date, home, away)
+    except EspnError as e:
         return jsonify({"error": e.message}), e.status_code
 
-    if fixture_id is None:
-        return jsonify({"available": False, "reason": "Could not match this fixture on API-Football."})
+    if event_id is None:
+        return jsonify({"available": False, "reason": "Could not match this fixture on ESPN."})
 
     try:
-        lineup_data = _fetch_lineups(fixture_id)
-        stats_data = _fetch_player_stats(fixture_id)
-    except ApiFootballPlanRestrictedError as e:
-        return jsonify({"available": False, "reason": e.message})
-    except ApiFootballError as e:
+        data = fetch_lineups(league, event_id)
+    except EspnError as e:
         return jsonify({"error": e.message}), e.status_code
 
-    lineup_response = lineup_data.get("response", [])
-    if not lineup_response:
-        return jsonify({"available": False, "reason": "Lineup not submitted for this fixture yet."})
+    rosters = data.get("rosters") or []
+    if not rosters or not any(block.get("roster") for block in rosters):
+        return jsonify({"available": False, "reason": "Lineup not published for this fixture yet."})
 
-    stats_by_player = {}
-    for team_block in stats_data.get("response", []):
-        for player_entry in team_block.get("players", []):
-            person = player_entry.get("player", {})
-            stats_list = player_entry.get("statistics") or [{}]
-            stats_by_player[person.get("id")] = stats_list[0]
-
-    teams = [_build_team(block, stats_by_player) for block in lineup_response]
+    teams = [_build_team(block) for block in rosters]
 
     return jsonify(
         {
