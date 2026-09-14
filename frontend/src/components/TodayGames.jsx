@@ -1,3 +1,4 @@
+import { API_BASE } from "../apiBase";
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import LeagueChips from "./LeagueChips";
@@ -24,7 +25,7 @@ export default function TodayGames() {
 
   useEffect(() => {
     setLoading(true);
-    fetch("http://127.0.0.1:5000/matches/today")
+    fetch(`${API_BASE}/matches/today`)
       .then((res) => res.json())
       .then((data) => {
         if (Array.isArray(data)) {

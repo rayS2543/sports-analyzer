@@ -1,3 +1,4 @@
+import { API_BASE } from "../apiBase";
 import React, { useEffect, useState } from "react";
 
 export default function LeagueSelector({ league, onChange, onLeaguesLoaded }) {
@@ -5,7 +6,7 @@ export default function LeagueSelector({ league, onChange, onLeaguesLoaded }) {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    fetch("http://127.0.0.1:5000/leagues")
+    fetch(`${API_BASE}/leagues`)
       .then((res) => res.json())
       .then((data) => {
         if (Array.isArray(data)) {

@@ -1,3 +1,4 @@
+import { API_BASE } from "../apiBase";
 import React, { useEffect, useState } from "react";
 import TeamBadge from "./TeamBadge";
 
@@ -7,7 +8,7 @@ export default function TeamsList({ league }) {
 
   useEffect(() => {
     setError(null);
-    fetch(`http://127.0.0.1:5000/teams?league=${league}`)
+    fetch(`${API_BASE}/teams?league=${league}`)
       .then((res) => res.json())
       .then((data) => {
         if (Array.isArray(data)) {

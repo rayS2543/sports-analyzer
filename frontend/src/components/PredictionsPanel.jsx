@@ -1,3 +1,4 @@
+import { API_BASE } from "../apiBase";
 import React, { useEffect, useState } from "react";
 import TeamBadge from "./TeamBadge";
 
@@ -9,7 +10,7 @@ export default function PredictionsPanel({ league }) {
     if (!league) return;
 
     setError(null);
-    fetch(`http://127.0.0.1:5000/predictions?league=${league}`)
+    fetch(`${API_BASE}/predictions?league=${league}`)
       .then((res) => res.json())
       .then((data) => {
         if (data && data.error) {
