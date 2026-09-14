@@ -11,12 +11,20 @@ const PALETTE = [
   "bg-teal-500",
 ];
 
-function colorFor(name) {
+function hashName(name) {
   let hash = 0;
   for (let i = 0; i < name.length; i++) {
     hash = name.charCodeAt(i) + ((hash << 5) - hash);
   }
-  return PALETTE[Math.abs(hash) % PALETTE.length];
+  return Math.abs(hash);
+}
+
+function colorFor(name) {
+  return PALETTE[hashName(name) % PALETTE.length];
+}
+
+export function hueFor(name) {
+  return hashName(name) % 360;
 }
 
 function initialsFor(name, tla) {
