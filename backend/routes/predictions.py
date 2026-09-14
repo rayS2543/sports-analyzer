@@ -64,6 +64,8 @@ def get_predictions():
             {
                 "home": home_name,
                 "away": away_name,
+                "home_crest": match["homeTeam"].get("crest"),
+                "away_crest": match["awayTeam"].get("crest"),
                 "date": match["utcDate"][:10],
                 "predicted_winner": predicted_winner,
                 "home_win_pct": round(home_win_pct, 1),

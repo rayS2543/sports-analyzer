@@ -53,13 +53,13 @@ export default function PredictionsPanel({ league }) {
                   <td className="px-4 py-3 text-slate-400">{p.date}</td>
                   <td className="px-4 py-3 font-semibold">
                     <div className="flex items-center gap-2">
-                      <TeamBadge name={p.home} size="sm" />
+                      <TeamBadge name={p.home} crest={p.home_crest} size="sm" />
                       {p.home}
                     </div>
                   </td>
                   <td className="px-4 py-3 font-semibold">
                     <div className="flex items-center gap-2">
-                      <TeamBadge name={p.away} size="sm" />
+                      <TeamBadge name={p.away} crest={p.away_crest} size="sm" />
                       {p.away}
                     </div>
                   </td>

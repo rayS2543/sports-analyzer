@@ -87,7 +87,7 @@ export default function TodayGames() {
               <span className="text-[11px] font-semibold text-slate-500 w-14 uppercase tracking-wide shrink-0">{m.league_code}</span>
 
               <div className="flex-1 flex items-center gap-3 min-w-0">
-                <TeamBadge name={m.home} size="sm" />
+                <TeamBadge name={m.home} crest={m.home_crest} size="sm" />
                 <span className="font-semibold truncate">{m.home}</span>
               </div>
 
@@ -110,7 +110,7 @@ export default function TodayGames() {
 
               <div className="flex-1 flex items-center gap-3 justify-end min-w-0">
                 <span className="font-semibold truncate text-right">{m.away}</span>
-                <TeamBadge name={m.away} size="sm" />
+                <TeamBadge name={m.away} crest={m.away_crest} size="sm" />
               </div>
             </div>
           );
