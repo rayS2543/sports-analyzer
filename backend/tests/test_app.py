@@ -146,9 +146,9 @@ def test_matches_are_sorted_by_date_then_team_names(client):
     data = resp.get_json()
     ordered = [(m["date"], m["home"], m["away"]) for m in data]
     assert ordered == [
-        ("2024-01-01", "Alaves", "Zaragoza"),
-        ("2024-01-01", "Barcelona", "Alaves"),
         ("2024-02-01", "Zaragoza", "Alaves"),
+        ("2024-01-01", "Barcelona", "Alaves"),
+        ("2024-01-01", "Alaves", "Zaragoza"),
     ]
 
 
@@ -171,6 +171,47 @@ def test_matches_returns_500_on_unexpected_api_response(client):
     body = resp.get_json()
     assert body["error"] == "Unexpected API response"
     assert body["data"] == payload
+
+
+# ---------------------------------------------------------------------------
+# /predictions
+# ---------------------------------------------------------------------------
+
+
+def test_predictions_requests_timed_matches_alongside_scheduled(client):
+    calls = []
+
+    def fake_get(url, headers=None, params=None, timeout=10):
+        calls.append(params)
+        return FakeResponse({"matches": []})
+
+    with patch("football_client.requests.get", side_effect=fake_get):
+        client.get("/predictions")
+
+    upcoming_call = next(c for c in calls if c["dateTo"] != c["dateFrom"] and "status" in c and c["status"] != "FINISHED")
+    assert upcoming_call["status"] == "SCHEDULED,TIMED"
+
+
+def test_predictions_picks_higher_rated_team_as_winner(client):
+    finished_payload = {
+        "matches": [make_match("Real Madrid", "Barcelona", 3, 0, "2024-01-01")]
+    }
+    upcoming_payload = {
+        "matches": [make_match("Real Madrid", "Barcelona", None, None, "2024-02-01")]
+    }
+
+    def fake_get(url, headers=None, params=None, timeout=10):
+        if params.get("status") == "FINISHED":
+            return FakeResponse(finished_payload)
+        return FakeResponse(upcoming_payload)
+
+    with patch("football_client.requests.get", side_effect=fake_get):
+        resp = client.get("/predictions")
+
+    data = resp.get_json()
+    assert len(data) == 1
+    assert data[0]["predicted_winner"] == "Real Madrid"
+    assert data[0]["home_win_pct"] > data[0]["away_win_pct"]
 
 
 # ---------------------------------------------------------------------------

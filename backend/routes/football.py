@@ -97,7 +97,7 @@ def get_matches():
                 "date": match["utcDate"][:10],
             }
         )
-    cleanedData.sort(key=lambda m: (m["date"], m["home"], m["away"]))
+    cleanedData.sort(key=lambda m: (m["date"], m["home"], m["away"]), reverse=True)
     db.upsert_matches(cleanedData, league)
     return jsonify(cleanedData)
 

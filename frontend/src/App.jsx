@@ -3,6 +3,7 @@ import { Routes, Route } from "react-router-dom";
 import Dashboard from "./components/Dashboard";
 import MatchDetailPage from "./components/MatchDetailPage";
 import PlayerDetailPage from "./components/PlayerDetailPage";
+import TeamDetailPage from "./components/TeamDetailPage";
 
 export default function App() {
   return (
@@ -11,6 +12,7 @@ export default function App() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/match/:id" element={<MatchDetailPage />} />
         <Route path="/player/:id" element={<PlayerDetailPage />} />
+        <Route path="/team/:league/:name" element={<TeamDetailPage />} />
       </Routes>
     </div>
   );

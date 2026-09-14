@@ -1,10 +1,12 @@
 import { API_BASE } from "../apiBase";
 import React, { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import TeamBadge from "./TeamBadge";
 
 export default function TeamsList({ league }) {
   const [teams, setTeams] = useState([]);
   const [error, setError] = useState(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     setError(null);
@@ -33,9 +35,11 @@ export default function TeamsList({ league }) {
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
           {teams.map((team) => (
-            <div
+            <button
               key={team.tla}
-              className="flex flex-col items-center gap-2 bg-slate-800/60 rounded-xl p-4 hover:bg-slate-800 transition-colors"
+              type="button"
+              onClick={() => navigate(`/team/${league}/${encodeURIComponent(team.name)}`)}
+              className="flex flex-col items-center gap-2 bg-slate-800/60 rounded-xl p-4 hover:bg-slate-800 transition-colors text-left"
             >
               {team.crest ? (
                 <img src={team.crest} alt={team.name} className="w-12 h-12 object-contain" />
@@ -44,7 +48,7 @@ export default function TeamsList({ league }) {
               )}
               <p className="text-sm font-semibold text-center">{team.shortName || team.name}</p>
               <p className="text-xs text-slate-400">{team.tla}</p>
-            </div>
+            </button>
           ))}
         </div>
       )}
