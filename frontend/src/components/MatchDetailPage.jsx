@@ -49,7 +49,12 @@ function TeamLineup({ team, expandedPlayer, onTogglePlayer }) {
       <p className="text-xs font-semibold text-slate-400 uppercase mb-2">Starting XI</p>
       <ul className="flex flex-col gap-1 mb-4">
         {team.starters.map((p) => (
-          <PlayerRow key={p.id} player={p} expanded={expandedPlayer === p.id} onToggle={() => onTogglePlayer(p.id)} />
+          <PlayerRow
+            key={p.id ?? `${p.name}-${p.number}`}
+            player={p}
+            expanded={expandedPlayer === p.id}
+            onToggle={() => onTogglePlayer(p.id)}
+          />
         ))}
       </ul>
 
@@ -58,7 +63,12 @@ function TeamLineup({ team, expandedPlayer, onTogglePlayer }) {
           <p className="text-xs font-semibold text-slate-400 uppercase mb-2">Bench</p>
           <ul className="flex flex-col gap-1">
             {team.bench.map((p) => (
-              <PlayerRow key={p.id} player={p} expanded={expandedPlayer === p.id} onToggle={() => onTogglePlayer(p.id)} />
+              <PlayerRow
+                key={p.id ?? `${p.name}-${p.number}`}
+                player={p}
+                expanded={expandedPlayer === p.id}
+                onToggle={() => onTogglePlayer(p.id)}
+              />
             ))}
           </ul>
         </>

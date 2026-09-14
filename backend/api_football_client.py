@@ -26,6 +26,14 @@ class ApiFootballError(Exception):
         self.status_code = status_code
 
 
+class ApiFootballPlanRestrictedError(ApiFootballError):
+    """Raised when the free API-Football plan doesn't cover the requested
+    season (e.g. current-season fixtures). This is an expected, recurring
+    condition on the free tier rather than a real failure, so callers
+    should degrade gracefully instead of surfacing it as a hard error.
+    """
+
+
 def _headers():
     return {"x-apisports-key": os.getenv("API_FOOTBALL_KEY")}
 
@@ -55,7 +63,13 @@ def get(path, params=None):
     if data.get("errors"):
         # API-Football returns HTTP 200 with an "errors" payload for bad
         # requests (e.g. an invalid/expired key), so check it explicitly.
-        raise ApiFootballError(f"API-Football error: {data['errors']}", status_code=502)
+        errors = data["errors"]
+        error_text = " ".join(str(v) for v in errors.values()) if isinstance(errors, dict) else str(errors)
+        if "plan" in error_text.lower() and "season" in error_text.lower():
+            raise ApiFootballPlanRestrictedError(
+                "This match's season isn't covered by the current API-Football plan.", status_code=200
+            )
+        raise ApiFootballError(f"API-Football error: {errors}", status_code=502)
     return data
 
 
