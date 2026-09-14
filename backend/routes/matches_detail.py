@@ -1,6 +1,6 @@
 from flask import Blueprint, jsonify, request
 
-from api_football_client import ApiFootballError, find_fixture_id, get
+from api_football_client import ApiFootballError, ApiFootballPlanRestrictedError, find_fixture_id, get
 from cache import cached
 from leagues import get_league
 
@@ -65,6 +65,8 @@ def get_match_detail():
 
     try:
         fixture_id = find_fixture_id(league, date, home, away)
+    except ApiFootballPlanRestrictedError as e:
+        return jsonify({"available": False, "reason": e.message})
     except ApiFootballError as e:
         return jsonify({"error": e.message}), e.status_code
 
@@ -74,6 +76,8 @@ def get_match_detail():
     try:
         lineup_data = _fetch_lineups(fixture_id)
         stats_data = _fetch_player_stats(fixture_id)
+    except ApiFootballPlanRestrictedError as e:
+        return jsonify({"available": False, "reason": e.message})
     except ApiFootballError as e:
         return jsonify({"error": e.message}), e.status_code
 
