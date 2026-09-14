@@ -1,3 +1,4 @@
+import { API_BASE } from "../apiBase";
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import TeamBadge from "./TeamBadge";
@@ -10,7 +11,7 @@ export default function MatchesTable({ league, leagueName }) {
 
   useEffect(() => {
     setError(null);
-    fetch(`http://127.0.0.1:5000/matches?league=${league}`)
+    fetch(`${API_BASE}/matches?league=${league}`)
       .then((res) => res.json())
       .then((data) => {
         if (Array.isArray(data)) {

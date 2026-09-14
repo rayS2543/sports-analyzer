@@ -1,10 +1,11 @@
+import { API_BASE } from "../apiBase";
 import React, { useEffect, useState } from "react";
 
 export default function LeagueChips({ selected, onChange }) {
   const [leagues, setLeagues] = useState([]);
 
   useEffect(() => {
-    fetch("http://127.0.0.1:5000/leagues")
+    fetch(`${API_BASE}/leagues`)
       .then((res) => res.json())
       .then((data) => {
         if (Array.isArray(data)) setLeagues(data);

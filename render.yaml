@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: sports-analyzer-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --bind 0.0.0.0:$PORT app:app
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: LOG_LEVEL
+        value: info
+      - key: FOOTBALL_API_KEY
+        sync: false
+      - key: API_FOOTBALL_KEY
+        sync: false
+      - key: SPORTS_ANALYZER_DB_PATH
+        value: /opt/render/project/src/backend/data.db

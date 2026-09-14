@@ -1,3 +1,4 @@
+import { API_BASE } from "../apiBase";
 import React, { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import TeamBadge from "./TeamBadge";
@@ -20,7 +21,7 @@ export default function PlayerDetailPage() {
   useEffect(() => {
     setPlayer(null);
     setError(null);
-    fetch(`http://127.0.0.1:5000/players/${id}`)
+    fetch(`${API_BASE}/players/${id}`)
       .then((res) => res.json())
       .then((data) => {
         if (data.error) {

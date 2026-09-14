@@ -1,3 +1,4 @@
+import { API_BASE } from "../apiBase";
 import React, { useEffect, useState } from "react";
 
 export default function NewsList({ query }) {
@@ -7,7 +8,7 @@ export default function NewsList({ query }) {
   useEffect(() => {
     if (!query) return;
     setLoading(true);
-    fetch(`http://127.0.0.1:5000/news?query=${encodeURIComponent(query)}`)
+    fetch(`${API_BASE}/news?query=${encodeURIComponent(query)}`)
       .then((res) => res.json())
       .then((data) => setItems(data.items || []))
       .catch((err) => {

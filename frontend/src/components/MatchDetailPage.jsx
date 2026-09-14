@@ -1,3 +1,4 @@
+import { API_BASE } from "../apiBase";
 import React, { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import TeamBadge from "./TeamBadge";
@@ -78,7 +79,7 @@ export default function MatchDetailPage() {
     setDetail(null);
     setDetailError(null);
     const query = new URLSearchParams({ league, date, home, away });
-    fetch(`http://127.0.0.1:5000/matches/detail?${query}`)
+    fetch(`${API_BASE}/matches/detail?${query}`)
       .then((res) => res.json())
       .then((data) => {
         if (data.error) {
