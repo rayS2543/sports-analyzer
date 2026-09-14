@@ -33,7 +33,10 @@ def get_predictions():
             "/matches",
             params={
                 "competitions": league,
-                "status": "SCHEDULED",
+                # football-data.org marks a fixture TIMED once its kickoff time
+                # is confirmed, which is true for most matches within the next
+                # 10 days - SCHEDULED alone (no confirmed time yet) misses them.
+                "status": "SCHEDULED,TIMED",
                 "dateFrom": today.isoformat(),
                 "dateTo": (today + timedelta(days=10)).isoformat(),
             },
