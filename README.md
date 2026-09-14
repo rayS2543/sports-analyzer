@@ -17,8 +17,8 @@ player detail across five top European leagues.
   current table.
 - **Match predictions** for upcoming fixtures, via a simple Elo rating model
   trained on the last 90 days of results.
-- **Match detail pages** with real lineups (via ESPN's free public API, no
-  key required) and **player profile pages** (via API-Football).
+- **Match detail pages** with real lineups (via FotMob's public match pages,
+  no key required) and **player profile pages** (via API-Football).
 - **News feed** per query, pulled from Google News RSS.
 - **Team form analytics**, built from a locally persisted match history that
   survives beyond football-data.org's rolling 10-day window.
@@ -42,14 +42,14 @@ sports-analyzer/
 │   ├── leagues.py               # supported competitions (PD, PL, SA, BL1, FL1)
 │   ├── football_client.py       # football-data.org client
 │   ├── api_football_client.py   # API-Football client (player stats)
-│   ├── espn_client.py           # ESPN public API client (free, keyless lineups)
+│   ├── fotmob_client.py         # FotMob match-page client (free, keyless lineups)
 │   ├── elo.py                   # Elo rating model for predictions
 │   ├── cache.py                 # in-memory TTL cache decorator
 │   ├── db.py                    # SQLite-persisted match history for analytics
 │   ├── routes/
 │   │   ├── football.py          # /leagues, /matches, /matches/today, /teams, /standings
 │   │   ├── predictions.py       # /predictions
-│   │   ├── matches_detail.py    # /matches/detail (lineups, via ESPN)
+│   │   ├── matches_detail.py    # /matches/detail (lineups, via FotMob)
 │   │   ├── players.py           # /players/<id>
 │   │   ├── news.py              # /news
 │   │   └── analytics.py         # /analytics/form/<team_name>
@@ -74,7 +74,7 @@ sports-analyzer/
 - Node.js 18+ and npm 9+
 - A free API key from [football-data.org](https://www.football-data.org/client/register)
 - (Optional, for player profile pages) an [API-Football](https://www.api-football.com/) key —
-  match lineups no longer need one, they're pulled from ESPN's free public API
+  match lineups no longer need one, they're pulled from FotMob's public pages
 
 ### Backend setup
 
