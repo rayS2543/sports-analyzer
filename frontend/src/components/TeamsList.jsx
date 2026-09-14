@@ -41,11 +41,7 @@ export default function TeamsList({ league }) {
               onClick={() => navigate(`/team/${league}/${encodeURIComponent(team.name)}`)}
               className="flex flex-col items-center gap-2 bg-slate-800/60 rounded-xl p-4 hover:bg-slate-800 transition-colors text-left"
             >
-              {team.crest ? (
-                <img src={team.crest} alt={team.name} className="w-12 h-12 object-contain" />
-              ) : (
-                <TeamBadge name={team.name} tla={team.tla} size="lg" />
-              )}
+              <TeamBadge name={team.name} tla={team.tla} crest={team.crest} size="lg" />
               <p className="text-sm font-semibold text-center">{team.shortName || team.name}</p>
               <p className="text-xs text-slate-400">{team.tla}</p>
             </button>

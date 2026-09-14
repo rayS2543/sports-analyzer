@@ -53,7 +53,7 @@ export default function StandingsTable({ league }) {
                   <td className="px-4 py-3 font-bold text-slate-400">{s.position}</td>
                   <td className="px-4 py-3 font-semibold">
                     <div className="flex items-center gap-2">
-                      <TeamBadge name={s.team_name} tla={s.tla} size="sm" />
+                      <TeamBadge name={s.team_name} tla={s.tla} crest={s.crest} size="sm" />
                       {s.team_name}
                     </div>
                   </td>

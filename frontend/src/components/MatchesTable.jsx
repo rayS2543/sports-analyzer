@@ -57,13 +57,13 @@ export default function MatchesTable({ league, leagueName }) {
                   <td className="px-4 py-3 text-slate-400">{m.date}</td>
                   <td className="px-4 py-3 font-semibold">
                     <div className="flex items-center gap-2">
-                      <TeamBadge name={m.home} size="sm" />
+                      <TeamBadge name={m.home} crest={m.home_crest} size="sm" />
                       {m.home}
                     </div>
                   </td>
                   <td className="px-4 py-3 font-semibold">
                     <div className="flex items-center gap-2">
-                      <TeamBadge name={m.away} size="sm" />
+                      <TeamBadge name={m.away} crest={m.away_crest} size="sm" />
                       {m.away}
                     </div>
                   </td>

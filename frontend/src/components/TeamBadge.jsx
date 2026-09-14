@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 
 const PALETTE = [
   "bg-rose-500",
@@ -35,8 +35,22 @@ const SIZE_CLASSES = {
   lg: "w-20 h-20 text-2xl",
 };
 
-export default function TeamBadge({ name, tla, size = "md" }) {
+export default function TeamBadge({ name, tla, crest, size = "md" }) {
+  const [imgFailed, setImgFailed] = useState(false);
   const sizeClasses = SIZE_CLASSES[size] || SIZE_CLASSES.md;
+
+  if (crest && !imgFailed) {
+    return (
+      <img
+        src={crest}
+        alt={name}
+        title={name}
+        className={`inline-block object-contain shrink-0 ${sizeClasses}`}
+        onError={() => setImgFailed(true)}
+      />
+    );
+  }
+
   return (
     <span
       className={`inline-flex items-center justify-center rounded-full font-bold text-white shrink-0 ${sizeClasses} ${colorFor(name)}`}

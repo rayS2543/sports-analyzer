@@ -98,6 +98,8 @@ def test_matches_computes_winner_and_points_for_home_win(client):
             "id": match["id"],
             "home": "Real Madrid",
             "away": "Barcelona",
+            "home_crest": None,
+            "away_crest": None,
             "score": "3 - 1",
             "winner": "Real Madrid",
             "home_points": 3,
