@@ -28,8 +28,8 @@ function PlayerRow({ player, expanded, onToggle }) {
             {player.yellow_cards > 0 && <span className="text-amber-400">Yellow: {player.yellow_cards}</span>}
             {player.red_cards > 0 && <span className="text-rose-400">Red: {player.red_cards}</span>}
           </div>
-          {player.id && (
-            <Link to={`/player/${player.id}`} className="text-violet-400 hover:text-violet-300 font-semibold">
+          {player.profile_id && (
+            <Link to={`/player/${player.profile_id}`} className="text-violet-400 hover:text-violet-300 font-semibold">
               Full profile →
             </Link>
           )}
