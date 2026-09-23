@@ -3,9 +3,22 @@ import xml.etree.ElementTree as ET
 import requests
 from flask import Blueprint, jsonify, request
 
+import news_client
+
 news_bp = Blueprint("news", __name__)
 
 RSS_URL = "https://news.google.com/rss/search"
+
+
+@news_bp.route("/news/teams")
+def get_team_news():
+    """Combined news for one or more favorited teams -- backs both a
+    single team's news section and the "For You" feed, depending on
+    how many team names the caller passes."""
+    teams = [t for t in request.args.get("teams", "").split(",") if t]
+    if not teams:
+        return jsonify({"items": [], "error": "teams parameter is required"}), 400
+    return jsonify({"items": news_client.for_teams(teams)})
 
 
 @news_bp.route("/news")
