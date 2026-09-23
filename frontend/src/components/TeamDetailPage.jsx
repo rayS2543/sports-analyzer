@@ -1,6 +1,8 @@
 import { API_BASE } from "../apiBase";
 import React, { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
+import FollowButton from "./FollowButton";
+import NewsFeed from "./NewsFeed";
 import TeamBadge from "./TeamBadge";
 import { ErrorNote, LEAGUE_NAMES, PageShell, Section, SkeletonRows, formatDay } from "./ui";
 
@@ -51,11 +53,16 @@ export default function TeamDetailPage() {
     <PageShell back>
       <section className="flex items-center gap-5">
         <TeamBadge name={teamName} size="xl" />
-        <div className="flex flex-col gap-1 min-w-0">
+        <div className="flex flex-col gap-1 min-w-0 flex-1">
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">{teamName}</h1>
           <p className="text-sm text-muted">{LEAGUE_NAMES[league] || league}</p>
         </div>
+        <FollowButton league={league} name={teamName} />
       </section>
+
+      <Section title="News">
+        <NewsFeed teams={[teamName]} />
+      </Section>
 
       {error && <ErrorNote>{error}</ErrorNote>}
 
