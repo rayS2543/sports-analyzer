@@ -1,16 +1,29 @@
 import { API_BASE } from "../apiBase";
 import React, { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import TeamBadge from "./TeamBadge";
+import { ErrorNote, LEAGUE_NAMES, PageShell, Section, SkeletonRows, formatDay } from "./ui";
 
-function FormBadge({ result }) {
-  const color =
-    result === "W" ? "bg-emerald-500" : result === "L" ? "bg-rose-500" : "bg-amber-500";
-  return <span className={`w-6 h-6 rounded-full ${color} text-xs font-bold flex items-center justify-center`}>{result}</span>;
+const RESULT_STYLE = {
+  W: { label: "Win", className: "bg-win/15 text-win" },
+  D: { label: "Draw", className: "bg-raised text-muted" },
+  L: { label: "Loss", className: "bg-loss/15 text-loss" },
+};
+
+function ResultChip({ result, size = "md" }) {
+  const style = RESULT_STYLE[result] || RESULT_STYLE.D;
+  const dims = size === "lg" ? "w-9 h-9 text-sm" : "w-6 h-6 text-xs";
+  return (
+    <span className={`inline-flex items-center justify-center rounded-md font-semibold ${dims} ${style.className}`} title={style.label}>
+      <span aria-hidden="true">{result}</span>
+      <span className="sr-only">{style.label}</span>
+    </span>
+  );
 }
 
 export default function TeamDetailPage() {
   const { league, name } = useParams();
+  const teamName = decodeURIComponent(name);
   const [form, setForm] = useState(null);
   const [error, setError] = useState(null);
 
@@ -32,73 +45,62 @@ export default function TeamDetailPage() {
       });
   }, [league, name]);
 
+  const resultFor = (m) => (m.winner === "Draw" ? "D" : m.winner === teamName ? "W" : "L");
+
   return (
-    <>
-      <header className="border-b border-slate-800 px-6 sm:px-10 py-5">
-        <div className="max-w-5xl mx-auto">
-          <Link to="/" className="text-violet-400 font-semibold hover:text-violet-300">
-            ← Back to Sports Analyzer
-          </Link>
+    <PageShell back>
+      <section className="flex items-center gap-5">
+        <TeamBadge name={teamName} size="xl" />
+        <div className="flex flex-col gap-1 min-w-0">
+          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">{teamName}</h1>
+          <p className="text-sm text-muted">{LEAGUE_NAMES[league] || league}</p>
         </div>
-      </header>
+      </section>
 
-      <main className="px-6 sm:px-10 py-10 flex flex-col gap-8 max-w-5xl mx-auto w-full">
-        <section className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-lg shadow-black/20 flex items-center gap-5">
-          <TeamBadge name={decodeURIComponent(name)} size="lg" />
-          <h1 className="text-2xl font-bold">{decodeURIComponent(name)}</h1>
-        </section>
+      {error && <ErrorNote>{error}</ErrorNote>}
 
-        {error && (
-          <section className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-lg shadow-black/20">
-            <p className="text-rose-400 font-semibold">{error}</p>
-          </section>
-        )}
+      {!error && !form && <SkeletonRows rows={6} />}
 
-        {!error && !form && (
-          <section className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-lg shadow-black/20">
-            <p className="text-slate-400">Loading form...</p>
-          </section>
-        )}
-
-        {!error && form && (
-          <>
-            <section className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-lg shadow-black/20">
-              <h2 className="text-xl font-bold mb-4">Recent Form</h2>
-              <div className="flex items-center gap-4">
-                <div className="flex gap-1">
-                  {form.form.split("").map((r, idx) => (
-                    <FormBadge key={idx} result={r} />
-                  ))}
-                </div>
-                <span className="text-slate-400">
-                  {form.points} points from last {form.matches_considered} matches
-                </span>
-              </div>
-            </section>
-
-            <section className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-lg shadow-black/20">
-              <h2 className="text-xl font-bold mb-4">Match History</h2>
-              <div className="flex flex-col divide-y divide-slate-800">
-                {form.matches.map((m, idx) => (
-                  <div key={idx} className="flex items-center justify-between py-3">
-                    <span className="text-slate-400 text-sm">{m.date}</span>
-                    <span className="font-semibold">
-                      {m.home} {m.score} {m.away}
-                    </span>
-                    <span
-                      className={`font-bold text-sm ${
-                        m.winner === "Draw" ? "text-amber-400" : "text-emerald-400"
-                      }`}
-                    >
-                      {m.winner === "Draw" ? "Draw" : `${m.winner} won`}
-                    </span>
-                  </div>
+      {!error && form && (
+        <>
+          <Section title="Recent form">
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+              <div className="flex gap-1.5">
+                {form.form.split("").map((r, idx) => (
+                  <ResultChip key={idx} result={r} size="lg" />
                 ))}
               </div>
-            </section>
-          </>
-        )}
-      </main>
-    </>
+              <p className="text-sm text-muted">
+                <span className="text-fg font-semibold tabular-nums">{form.points}</span> points from the last{" "}
+                {form.matches_considered} matches
+              </p>
+            </div>
+          </Section>
+
+          <Section title="Match history">
+            <ul className="flex flex-col">
+              {form.matches.map((m, idx) => {
+                const result = resultFor(m);
+                return (
+                  <li key={idx} className="flex items-center gap-4 py-3 border-b border-line/60 last:border-0 text-sm">
+                    <div className="flex-1 min-w-0 flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-4">
+                      <time dateTime={m.date} className="sm:w-24 shrink-0 text-xs text-faint">
+                        {formatDay(m.date)}
+                      </time>
+                      <span className="min-w-0 truncate">
+                        <span className={m.home === teamName ? "font-semibold" : "text-muted"}>{m.home}</span>{" "}
+                        <span className="tabular-nums font-semibold px-1">{m.score}</span>{" "}
+                        <span className={m.away === teamName ? "font-semibold" : "text-muted"}>{m.away}</span>
+                      </span>
+                    </div>
+                    <ResultChip result={result} />
+                  </li>
+                );
+              })}
+            </ul>
+          </Section>
+        </>
+      )}
+    </PageShell>
   );
 }

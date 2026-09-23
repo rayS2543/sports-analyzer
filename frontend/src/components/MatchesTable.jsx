@@ -1,16 +1,23 @@
 import { API_BASE } from "../apiBase";
 import React, { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import TeamBadge from "./TeamBadge";
 import { encodeMatchId } from "../matchId";
+import { ErrorNote, EmptyNote, Section, SkeletonRows, formatDay } from "./ui";
+
+function resultOf(m) {
+  if (m.winner === "Draw") return "draw";
+  return m.winner === m.home ? "home" : "away";
+}
 
 export default function MatchesTable({ league, leagueName }) {
-  const [matches, setMatches] = useState([]);
+  const [matches, setMatches] = useState(null);
   const [error, setError] = useState(null);
   const navigate = useNavigate();
 
   useEffect(() => {
     setError(null);
+    setMatches(null);
     fetch(`${API_BASE}/matches?league=${league}`)
       .then((res) => res.json())
       .then((data) => {
@@ -29,62 +36,65 @@ export default function MatchesTable({ league, leagueName }) {
   }, [league]);
 
   return (
-    <div className="max-w-5xl mx-auto w-full bg-slate-900/70 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-lg shadow-black/20">
-      <h2 className="text-xl font-bold mb-6">
-        ⚽ {leagueName ? `${leagueName} Match Tracker` : "Match Tracker"}
-      </h2>
+    <Section title="Recent results">
       {error ? (
-        <p className="text-base font-semibold text-rose-400">{error}</p>
+        <ErrorNote>{error}</ErrorNote>
+      ) : matches === null ? (
+        <SkeletonRows rows={5} />
+      ) : matches.length === 0 ? (
+        <EmptyNote>No results in the last few days.</EmptyNote>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="bg-slate-800/80 text-slate-300">
-                <th className="px-4 py-3 text-left font-semibold border-b border-slate-700">Date</th>
-                <th className="px-4 py-3 text-left font-semibold border-b border-slate-700">Home Team</th>
-                <th className="px-4 py-3 text-left font-semibold border-b border-slate-700">Away Team</th>
-                <th className="px-4 py-3 text-center font-semibold border-b border-slate-700">Score</th>
-                <th className="px-4 py-3 text-center font-semibold border-b border-slate-700">Winner</th>
-              </tr>
-            </thead>
-            <tbody>
-              {matches.map((m, idx) => (
+        <table className="w-full border-collapse text-sm">
+          <caption className="sr-only">{leagueName ? `${leagueName} recent results` : "Recent results"}</caption>
+          <thead className="sr-only">
+            <tr>
+              <th>Date</th>
+              <th>Teams</th>
+              <th>Score</th>
+            </tr>
+          </thead>
+          <tbody>
+            {matches.map((m, idx) => {
+              const result = resultOf(m);
+              const to = `/match/${encodeMatchId({ league, date: m.date, home: m.home, away: m.away })}`;
+              const team = (name, crest, won) => (
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <TeamBadge name={name} crest={crest} size="sm" />
+                  <span className={`truncate ${won ? "font-semibold" : "text-muted"}`}>{name}</span>
+                </div>
+              );
+              return (
                 <tr
                   key={idx}
-                  onClick={() => navigate(`/match/${encodeMatchId({ league, date: m.date, home: m.home, away: m.away })}`)}
-                  className="border-b border-slate-800 hover:bg-slate-800/40 cursor-pointer"
+                  data-result={result}
+                  onClick={() => navigate(to)}
+                  className="border-b border-line/60 last:border-0 cursor-pointer hover:bg-surface transition-colors duration-150"
                 >
-                  <td className="px-4 py-3 text-slate-400">{m.date}</td>
-                  <td className="px-4 py-3 font-semibold">
-                    <div className="flex items-center gap-2">
-                      <TeamBadge name={m.home} crest={m.home_crest} size="sm" />
-                      {m.home}
+                  <td className="py-3 pl-1 pr-3 w-16 text-xs text-faint align-middle whitespace-nowrap">
+                    <time dateTime={m.date}>{formatDay(m.date, { weekday: false })}</time>
+                  </td>
+                  <td className="py-3 max-w-0 w-full">
+                    <div className="flex flex-col gap-2">
+                      {team(m.home, m.home_crest, result === "home")}
+                      {team(m.away, m.away_crest, result === "away")}
                     </div>
                   </td>
-                  <td className="px-4 py-3 font-semibold">
-                    <div className="flex items-center gap-2">
-                      <TeamBadge name={m.away} crest={m.away_crest} size="sm" />
-                      {m.away}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-center text-base font-bold tabular-nums">{m.score}</td>
-                  <td
-                    className={`px-4 py-3 text-center font-bold ${
-                      m.winner === "Draw"
-                        ? "text-amber-400"
-                        : m.winner === m.home
-                        ? "text-emerald-400"
-                        : "text-rose-400"
-                    }`}
-                  >
-                    {m.winner}
+                  <td className="py-3 pl-3 pr-1 text-right align-middle">
+                    <Link
+                      to={to}
+                      onClick={(e) => e.stopPropagation()}
+                      aria-label={`${m.home} ${m.score} ${m.away}, match details`}
+                      className="inline-block rounded-md bg-raised px-2 py-1 font-semibold tabular-nums whitespace-nowrap"
+                    >
+                      {m.score}
+                    </Link>
                   </td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              );
+            })}
+          </tbody>
+        </table>
       )}
-    </div>
+    </Section>
   );
 }
