@@ -17,7 +17,6 @@ player detail across five top European leagues.
   current table.
 - **Match predictions** for upcoming fixtures, via a simple Elo rating model
   trained on the last 90 days of results.
-<<<<<<< HEAD
 - **Match detail pages** with real lineups (via FotMob's public match pages,
   no key required) and **player profile pages** (via API-Football).
 - **News feed** per query, pulled from Google News RSS.

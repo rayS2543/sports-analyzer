@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import MatchesTable from "./MatchesTable";
@@ -61,34 +61,33 @@ describe("MatchesTable", () => {
 
     renderMatchesTable();
 
-    await screen.findByText(sampleMatches[0].date);
+    await screen.findByText(sampleMatches[0].score);
 
     for (const match of sampleMatches) {
-      const row = screen.getByText(match.date).closest("tr");
-      // Team cells now include a TeamBadge avatar alongside the name, so
-      // check containment rather than exact cell text.
+      const row = screen.getByText(match.score).closest("tr");
+      // Team cells include a TeamBadge alongside the name, so check
+      // containment rather than exact cell text.
+      expect(row.querySelector("time").getAttribute("datetime")).toBe(match.date);
       expect(row.textContent).toContain(match.home);
       expect(row.textContent).toContain(match.away);
-      expect(within(row).getByText(match.score)).toBeInTheDocument();
     }
   });
 
-  it("styles a home win, an away win and a draw differently", async () => {
+  it("marks each row as a home win, an away win or a draw", async () => {
     fetch.mockResolvedValueOnce({ json: async () => sampleMatches });
 
     renderMatchesTable();
 
-    const homeWin = await screen.findByText("Real Madrid", {
-      selector: "td.text-emerald-400",
-    });
-    const awayWin = screen.getByText("Valencia", {
-      selector: "td.text-rose-400",
-    });
-    const draw = screen.getByText("Draw", { selector: "td.text-amber-400" });
+    await screen.findByText(sampleMatches[0].score);
 
-    expect(homeWin).toBeInTheDocument();
-    expect(awayWin).toBeInTheDocument();
-    expect(draw).toBeInTheDocument();
+    const resultOf = (score) => screen.getByText(score).closest("tr").dataset.result;
+    expect(resultOf("3 - 1")).toBe("home");
+    expect(resultOf("0 - 2")).toBe("away");
+    expect(resultOf("1 - 1")).toBe("draw");
+
+    // The winning side is emphasised; the other side is muted.
+    expect(screen.getByText("Real Madrid")).toHaveClass("font-semibold");
+    expect(screen.getByText("Barcelona")).toHaveClass("text-muted");
   });
 
   it("shows an error message instead of the table when the fetch fails", async () => {

@@ -4,33 +4,44 @@ import { Link, useParams } from "react-router-dom";
 import TeamBadge from "./TeamBadge";
 import NewsList from "./NewsList";
 import { decodeMatchId } from "../matchId";
+import { EmptyNote, ErrorNote, LEAGUE_NAMES, PageShell, Section, SkeletonRows, formatDay } from "./ui";
 
 function PlayerRow({ player, expanded, onToggle }) {
   return (
     <li>
       <button
+        type="button"
         onClick={onToggle}
-        className="w-full flex items-center gap-2 text-left px-2 py-1.5 rounded-lg hover:bg-slate-800/60 transition-colors"
+        aria-expanded={expanded}
+        className={`pressable w-full flex items-center gap-3 text-left px-2 py-2 rounded-lg text-sm ${
+          expanded ? "bg-raised" : "hover:bg-surface"
+        }`}
       >
-        <span className="text-xs text-slate-500 w-5 text-right shrink-0">{player.number ?? ""}</span>
+        <span className="text-xs text-faint w-5 text-right tabular-nums shrink-0">{player.number ?? ""}</span>
         <span className="font-medium flex-1 truncate">{player.name}</span>
-        <span className="text-xs text-slate-500">{player.position}</span>
+        {player.goals > 0 && <span className="text-xs text-fg tabular-nums">{player.goals > 1 ? `${player.goals} goals` : "Goal"}</span>}
+        {player.red_cards > 0 && <span className="w-2 h-3 rounded-[2px] bg-loss" title="Red card" />}
+        {player.yellow_cards > 0 && !player.red_cards && <span className="w-2 h-3 rounded-[2px] bg-accent" title="Yellow card" />}
+        <span className="text-xs text-faint w-4 text-center">{player.position}</span>
       </button>
       {expanded && (
-        <div className="ml-9 mb-2 px-3 py-2 rounded-lg bg-slate-800/60 text-sm flex flex-col gap-1.5">
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-slate-300">
-            <span>
-              Rating: <strong className="text-violet-300">{player.rating ?? "-"}</strong>
-            </span>
-            <span>Minutes: {player.minutes ?? "-"}</span>
-            <span>Goals: {player.goals}</span>
-            <span>Assists: {player.assists}</span>
-            {player.yellow_cards > 0 && <span className="text-amber-400">Yellow: {player.yellow_cards}</span>}
-            {player.red_cards > 0 && <span className="text-rose-400">Red: {player.red_cards}</span>}
-          </div>
+        <div className="ml-10 mr-2 mt-1 mb-2 flex flex-col gap-2 text-sm">
+          <dl className="grid grid-cols-4 gap-2">
+            {[
+              ["Rating", player.rating ?? "-", "text-accent"],
+              ["Minutes", player.minutes ?? "-"],
+              ["Goals", player.goals],
+              ["Assists", player.assists],
+            ].map(([label, value, tone]) => (
+              <div key={label}>
+                <dt className="text-xs text-faint">{label}</dt>
+                <dd className={`font-semibold tabular-nums ${tone || ""}`}>{value}</dd>
+              </div>
+            ))}
+          </dl>
           {player.profile_id && (
-            <Link to={`/player/${player.profile_id}`} className="text-violet-400 hover:text-violet-300 font-semibold">
-              Full profile →
+            <Link to={`/player/${player.profile_id}`} className="self-start text-accent font-medium hover:underline">
+              Full profile <span aria-hidden="true">→</span>
             </Link>
           )}
         </div>
@@ -39,16 +50,12 @@ function PlayerRow({ player, expanded, onToggle }) {
   );
 }
 
-function TeamLineup({ team, expandedPlayer, onTogglePlayer }) {
-  if (!team) return null;
+function PlayerGroup({ label, players, expandedPlayer, onTogglePlayer }) {
   return (
-    <div>
-      <h3 className="font-bold mb-1">{team.team_name}</h3>
-      <p className="text-xs text-slate-500 mb-3">Formation: {team.formation || "-"}</p>
-
-      <p className="text-xs font-semibold text-slate-400 uppercase mb-2">Starting XI</p>
-      <ul className="flex flex-col gap-1 mb-4">
-        {team.starters.map((p) => (
+    <div className="flex flex-col gap-1">
+      <h4 className="text-xs font-medium text-faint px-2 mb-1">{label}</h4>
+      <ul className="flex flex-col">
+        {players.map((p) => (
           <PlayerRow
             key={p.id ?? `${p.name}-${p.number}`}
             player={p}
@@ -57,21 +64,21 @@ function TeamLineup({ team, expandedPlayer, onTogglePlayer }) {
           />
         ))}
       </ul>
+    </div>
+  );
+}
 
+function TeamLineup({ team, expandedPlayer, onTogglePlayer }) {
+  if (!team) return null;
+  return (
+    <div className="flex flex-col gap-4 min-w-0">
+      <div className="flex items-baseline justify-between gap-3 border-b border-line pb-3">
+        <h3 className="font-semibold truncate">{team.team_name}</h3>
+        <span className="text-sm text-muted tabular-nums shrink-0">{team.formation || "-"}</span>
+      </div>
+      <PlayerGroup label="Starting XI" players={team.starters} expandedPlayer={expandedPlayer} onTogglePlayer={onTogglePlayer} />
       {team.bench.length > 0 && (
-        <>
-          <p className="text-xs font-semibold text-slate-400 uppercase mb-2">Bench</p>
-          <ul className="flex flex-col gap-1">
-            {team.bench.map((p) => (
-              <PlayerRow
-                key={p.id ?? `${p.name}-${p.number}`}
-                player={p}
-                expanded={expandedPlayer === p.id}
-                onToggle={() => onTogglePlayer(p.id)}
-              />
-            ))}
-          </ul>
-        </>
+        <PlayerGroup label="Bench" players={team.bench} expandedPlayer={expandedPlayer} onTogglePlayer={onTogglePlayer} />
       )}
     </div>
   );
@@ -107,51 +114,45 @@ export default function MatchDetailPage() {
   const togglePlayer = (playerId) => setExpandedPlayer((current) => (current === playerId ? null : playerId));
 
   return (
-    <>
-      <header className="border-b border-slate-800 px-6 sm:px-10 py-5">
-        <div className="max-w-5xl mx-auto">
-          <Link to="/" className="text-violet-400 font-semibold hover:text-violet-300">
-            ← Back to Sports Analyzer
-          </Link>
-        </div>
-      </header>
-
-      <main className="px-6 sm:px-10 py-10 flex flex-col gap-8 max-w-5xl mx-auto w-full">
-        <section className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-lg shadow-black/20">
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3 flex-1 min-w-0">
-              <TeamBadge name={home} />
-              <span className="font-bold text-lg truncate">{home}</span>
-            </div>
-            <span className="text-sm text-slate-400 shrink-0">{date}</span>
-            <div className="flex items-center gap-3 flex-1 min-w-0 justify-end">
-              <span className="font-bold text-lg truncate text-right">{away}</span>
-              <TeamBadge name={away} />
-            </div>
+    <PageShell back>
+      <section className="flex flex-col items-center gap-6 pt-4 text-center">
+        <p className="text-sm text-muted">
+          {LEAGUE_NAMES[league] || league}
+          {date && <> &middot; {formatDay(date)}</>}
+        </p>
+        <div className="grid grid-cols-[1fr_auto_1fr] items-start gap-4 sm:gap-10 w-full max-w-2xl">
+          <div className="flex flex-col items-center gap-3 min-w-0">
+            <TeamBadge name={home} size="xl" />
+            <h1 className="text-lg sm:text-2xl font-semibold tracking-tight">{home}</h1>
           </div>
-        </section>
+          <span className="pt-7 text-faint text-sm">vs</span>
+          <div className="flex flex-col items-center gap-3 min-w-0">
+            <TeamBadge name={away} size="xl" />
+            <h2 className="text-lg sm:text-2xl font-semibold tracking-tight">{away}</h2>
+          </div>
+        </div>
+      </section>
 
-        <section className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-lg shadow-black/20">
-          <h2 className="text-xl font-bold mb-6">Lineups</h2>
+      <Section title="Lineups">
+        {detailError && <ErrorNote>{detailError}</ErrorNote>}
+        {!detailError && !detail && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
+            <SkeletonRows rows={8} />
+            <SkeletonRows rows={8} />
+          </div>
+        )}
+        {!detailError && detail && !detail.available && <EmptyNote>{detail.reason || "Lineup not available for this match."}</EmptyNote>}
+        {!detailError && detail && detail.available && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-10 gap-y-12">
+            <TeamLineup team={detail.home} expandedPlayer={expandedPlayer} onTogglePlayer={togglePlayer} />
+            <TeamLineup team={detail.away} expandedPlayer={expandedPlayer} onTogglePlayer={togglePlayer} />
+          </div>
+        )}
+      </Section>
 
-          {detailError && <p className="text-rose-400 font-semibold">{detailError}</p>}
-          {!detailError && !detail && <p className="text-slate-400">Loading lineups...</p>}
-          {!detailError && detail && !detail.available && (
-            <p className="text-slate-400">{detail.reason || "Lineup not available for this match."}</p>
-          )}
-          {!detailError && detail && detail.available && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-8">
-              <TeamLineup team={detail.home} expandedPlayer={expandedPlayer} onTogglePlayer={togglePlayer} />
-              <TeamLineup team={detail.away} expandedPlayer={expandedPlayer} onTogglePlayer={togglePlayer} />
-            </div>
-          )}
-        </section>
-
-        <section className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-lg shadow-black/20">
-          <h2 className="text-xl font-bold mb-4">Recent Headlines</h2>
-          <NewsList query={`${home} vs ${away}`} />
-        </section>
-      </main>
-    </>
+      <Section title="Recent headlines">
+        <NewsList query={`${home} vs ${away}`} />
+      </Section>
+    </PageShell>
   );
 }

@@ -7,7 +7,7 @@ import TeamDetailPage from "./components/TeamDetailPage";
 
 export default function App() {
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
+    <div className="min-h-screen bg-canvas text-fg">
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/match/:id" element={<MatchDetailPage />} />

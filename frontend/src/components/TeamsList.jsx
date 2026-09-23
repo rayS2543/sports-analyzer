@@ -1,12 +1,12 @@
 import { API_BASE } from "../apiBase";
 import React, { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import TeamBadge from "./TeamBadge";
+import { ErrorNote, Section } from "./ui";
 
 export default function TeamsList({ league }) {
   const [teams, setTeams] = useState([]);
   const [error, setError] = useState(null);
-  const navigate = useNavigate();
 
   useEffect(() => {
     setError(null);
@@ -28,26 +28,25 @@ export default function TeamsList({ league }) {
   }, [league]);
 
   return (
-    <div className="max-w-5xl mx-auto w-full bg-slate-900/70 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-lg shadow-black/20">
-      <h2 className="text-xl font-bold mb-6">Teams</h2>
+    <Section title="Clubs" aside={teams.length > 0 ? `${teams.length} teams` : null}>
       {error ? (
-        <p className="text-base font-semibold text-rose-400">{error}</p>
+        <ErrorNote>{error}</ErrorNote>
       ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+        <ul className="grid grid-cols-1 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-x-3 gap-y-1">
           {teams.map((team) => (
-            <button
-              key={team.tla}
-              type="button"
-              onClick={() => navigate(`/team/${league}/${encodeURIComponent(team.name)}`)}
-              className="flex flex-col items-center gap-2 bg-slate-800/60 rounded-xl p-4 hover:bg-slate-800 transition-colors text-left"
-            >
-              <TeamBadge name={team.name} tla={team.tla} crest={team.crest} size="lg" />
-              <p className="text-sm font-semibold text-center">{team.shortName || team.name}</p>
-              <p className="text-xs text-slate-400">{team.tla}</p>
-            </button>
+            <li key={team.tla}>
+              <Link
+                to={`/team/${league}/${encodeURIComponent(team.name)}`}
+                className="pressable flex items-center gap-3 rounded-lg px-2 py-2 -mx-2 hover:bg-surface"
+              >
+                <TeamBadge name={team.name} tla={team.tla} crest={team.crest} size="md" />
+                <span className="flex-1 min-w-0 truncate text-sm font-medium">{team.shortName || team.name}</span>
+                <span className="text-xs text-faint tabular-nums">{team.tla}</span>
+              </Link>
+            </li>
           ))}
-        </div>
+        </ul>
       )}
-    </div>
+    </Section>
   );
 }

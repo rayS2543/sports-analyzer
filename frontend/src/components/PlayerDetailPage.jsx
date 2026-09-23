@@ -1,15 +1,29 @@
 import { API_BASE } from "../apiBase";
 import React, { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import TeamBadge from "./TeamBadge";
 import NewsList from "./NewsList";
+import { ErrorNote, PageShell, Section, SkeletonRows } from "./ui";
 
-function Stat({ label, value, accent = "text-white" }) {
+function Stat({ label, value, tone = "text-fg" }) {
   return (
-    <div className="bg-slate-800/60 rounded-xl p-4">
-      <p className="text-xs text-slate-400 uppercase tracking-wide mb-1">{label}</p>
-      <p className={`text-2xl font-bold ${accent}`}>{value ?? "-"}</p>
+    <div className="flex flex-col gap-1 bg-surface px-4 py-4">
+      <dt className="text-xs text-faint">{label}</dt>
+      <dd className={`text-2xl font-semibold tabular-nums tracking-tight ${tone}`}>{value ?? "-"}</dd>
     </div>
+  );
+}
+
+function PlayerPhoto({ player }) {
+  const [failed, setFailed] = useState(false);
+  if (!player.photo || failed) return <TeamBadge name={player.name} size="xl" />;
+  return (
+    <img
+      src={player.photo}
+      alt={player.name}
+      className="w-20 h-20 rounded-xl object-cover bg-raised ring-1 ring-line"
+      onError={() => setFailed(true)}
+    />
   );
 }
 
@@ -37,70 +51,41 @@ export default function PlayerDetailPage() {
   }, [id]);
 
   return (
-    <>
-      <header className="border-b border-slate-800 px-6 sm:px-10 py-5">
-        <div className="max-w-5xl mx-auto">
-          <Link to="/" className="text-violet-400 font-semibold hover:text-violet-300">
-            ← Back to Sports Analyzer
-          </Link>
-        </div>
-      </header>
+    <PageShell back>
+      {error && <ErrorNote>{error}</ErrorNote>}
 
-      <main className="px-6 sm:px-10 py-10 flex flex-col gap-8 max-w-5xl mx-auto w-full">
-        {error && (
-          <section className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-lg shadow-black/20">
-            <p className="text-rose-400 font-semibold">{error}</p>
+      {!error && !player && <SkeletonRows rows={4} />}
+
+      {!error && player && (
+        <>
+          <section className="flex items-center gap-5">
+            <PlayerPhoto player={player} />
+            <div className="flex flex-col gap-1 min-w-0">
+              <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">{player.name}</h1>
+              <p className="text-sm text-muted">
+                {[player.position, player.current_team, player.nationality].filter(Boolean).join(", ")}
+              </p>
+            </div>
           </section>
-        )}
 
-        {!error && !player && (
-          <section className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-lg shadow-black/20">
-            <p className="text-slate-400">Loading player...</p>
-          </section>
-        )}
+          <Section title={`${player.season} season`}>
+            <dl className="grid grid-cols-2 sm:grid-cols-3 gap-px overflow-hidden rounded-xl border border-line bg-line">
+              <Stat label="Appearances" value={player.appearances} />
+              <Stat label="Goals" value={player.goals} />
+              <Stat label="Assists" value={player.assists} />
+              <Stat label="Average rating" value={player.rating} tone="text-accent" />
+              <Stat label="Yellow cards" value={player.yellow_cards} />
+              <Stat label="Red cards" value={player.red_cards} tone={player.red_cards > 0 ? "text-loss" : "text-fg"} />
+            </dl>
+          </Section>
+        </>
+      )}
 
-        {!error && player && (
-          <>
-            <section className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-lg shadow-black/20 flex items-center gap-5">
-              {player.photo ? (
-                <img
-                  src={player.photo}
-                  alt={player.name}
-                  className="w-20 h-20 rounded-full object-cover border border-slate-700"
-                  onError={(e) => {
-                    e.currentTarget.style.display = "none";
-                  }}
-                />
-              ) : (
-                <TeamBadge name={player.name} size="lg" />
-              )}
-              <div>
-                <h1 className="text-2xl font-bold">{player.name}</h1>
-                <p className="text-slate-400">
-                  {[player.position, player.current_team, player.nationality].filter(Boolean).join(" · ")}
-                </p>
-              </div>
-            </section>
-
-            <section className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-lg shadow-black/20">
-              <h2 className="text-xl font-bold mb-6">{player.season} Season Stats</h2>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                <Stat label="Appearances" value={player.appearances} />
-                <Stat label="Goals" value={player.goals} />
-                <Stat label="Assists" value={player.assists} />
-                <Stat label="Rating" value={player.rating} accent="text-violet-300" />
-                <Stat label="Yellow Cards" value={player.yellow_cards} accent="text-amber-400" />
-                <Stat label="Red Cards" value={player.red_cards} accent="text-rose-400" />
-              </div>
-            </section>
-          </>
-        )}
-
-        <section className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-lg shadow-black/20">
-          <h2 className="text-xl font-bold mb-4">Recent Headlines</h2>
-          {player && <NewsList query={player.name} />}
-        </section>
-      </main>
-    </>
+      {player && (
+        <Section title="Recent headlines">
+          <NewsList query={player.name} />
+        </Section>
+      )}
+    </PageShell>
   );
 }

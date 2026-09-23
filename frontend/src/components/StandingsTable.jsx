@@ -1,13 +1,19 @@
 import { API_BASE } from "../apiBase";
 import React, { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import TeamBadge from "./TeamBadge";
+import { ErrorNote, Section, SkeletonRows } from "./ui";
+
+const th = "py-2.5 px-2 font-medium text-faint text-xs";
+const td = "py-2.5 px-2 text-center tabular-nums text-muted";
 
 export default function StandingsTable({ league }) {
-  const [standings, setStandings] = useState([]);
+  const [standings, setStandings] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
     setError(null);
+    setStandings(null);
     fetch(`${API_BASE}/standings?league=${league}`)
       .then((res) => res.json())
       .then((data) => {
@@ -26,51 +32,55 @@ export default function StandingsTable({ league }) {
   }, [league]);
 
   return (
-    <div className="max-w-5xl mx-auto w-full bg-slate-900/70 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-lg shadow-black/20">
-      <h2 className="text-xl font-bold mb-6">Standings</h2>
+    <Section title="Table">
       {error ? (
-        <p className="text-base font-semibold text-rose-400">{error}</p>
+        <ErrorNote>{error}</ErrorNote>
+      ) : standings === null ? (
+        <SkeletonRows rows={10} />
       ) : (
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto -mx-2">
           <table className="w-full border-collapse text-sm">
             <thead>
-              <tr className="bg-slate-800/80 text-slate-300">
-                <th className="px-4 py-3 text-left font-semibold border-b border-slate-700">Pos</th>
-                <th className="px-4 py-3 text-left font-semibold border-b border-slate-700">Team</th>
-                <th className="px-4 py-3 text-center font-semibold border-b border-slate-700">P</th>
-                <th className="px-4 py-3 text-center font-semibold border-b border-slate-700">W</th>
-                <th className="px-4 py-3 text-center font-semibold border-b border-slate-700">D</th>
-                <th className="px-4 py-3 text-center font-semibold border-b border-slate-700">L</th>
-                <th className="px-4 py-3 text-center font-semibold border-b border-slate-700">GF</th>
-                <th className="px-4 py-3 text-center font-semibold border-b border-slate-700">GA</th>
-                <th className="px-4 py-3 text-center font-semibold border-b border-slate-700">GD</th>
-                <th className="px-4 py-3 text-center font-semibold border-b border-slate-700">Pts</th>
+              <tr className="border-b border-line">
+                <th className={`${th} w-8 text-center`}>#</th>
+                <th className={`${th} text-left`}>Team</th>
+                <th className={`${th} text-center`} title="Played">P</th>
+                <th className={`${th} text-center`} title="Won">W</th>
+                <th className={`${th} text-center`} title="Drawn">D</th>
+                <th className={`${th} text-center`} title="Lost">L</th>
+                <th className={`${th} text-center hidden sm:table-cell`} title="Goals for">GF</th>
+                <th className={`${th} text-center hidden sm:table-cell`} title="Goals against">GA</th>
+                <th className={`${th} text-center`} title="Goal difference">GD</th>
+                <th className={`${th} text-center text-fg`}>Pts</th>
               </tr>
             </thead>
             <tbody>
               {standings.map((s, idx) => (
-                <tr key={idx} className="border-b border-slate-800 hover:bg-slate-800/40">
-                  <td className="px-4 py-3 font-bold text-slate-400">{s.position}</td>
-                  <td className="px-4 py-3 font-semibold">
-                    <div className="flex items-center gap-2">
+                <tr key={idx} className="border-b border-line/60 last:border-0 hover:bg-surface transition-colors duration-150">
+                  <td className={`${td} text-faint`}>{s.position}</td>
+                  <td className="py-2.5 px-2 max-w-0 w-full">
+                    <Link
+                      to={`/team/${league}/${encodeURIComponent(s.team_name)}`}
+                      className="flex items-center gap-2.5 font-medium hover:text-accent transition-colors duration-150"
+                    >
                       <TeamBadge name={s.team_name} tla={s.tla} crest={s.crest} size="sm" />
-                      {s.team_name}
-                    </div>
+                      <span className="truncate">{s.team_name}</span>
+                    </Link>
                   </td>
-                  <td className="px-4 py-3 text-center">{s.playedGames}</td>
-                  <td className="px-4 py-3 text-center">{s.won}</td>
-                  <td className="px-4 py-3 text-center">{s.draw}</td>
-                  <td className="px-4 py-3 text-center">{s.lost}</td>
-                  <td className="px-4 py-3 text-center">{s.goalsFor}</td>
-                  <td className="px-4 py-3 text-center">{s.goalsAgainst}</td>
-                  <td className="px-4 py-3 text-center">{s.goalDifference}</td>
-                  <td className="px-4 py-3 text-center text-base font-bold text-violet-400">{s.points}</td>
+                  <td className={td}>{s.playedGames}</td>
+                  <td className={td}>{s.won}</td>
+                  <td className={td}>{s.draw}</td>
+                  <td className={td}>{s.lost}</td>
+                  <td className={`${td} hidden sm:table-cell`}>{s.goalsFor}</td>
+                  <td className={`${td} hidden sm:table-cell`}>{s.goalsAgainst}</td>
+                  <td className={td}>{s.goalDifference > 0 ? `+${s.goalDifference}` : s.goalDifference}</td>
+                  <td className={`${td} text-fg font-semibold`}>{s.points}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       )}
-    </div>
+    </Section>
   );
 }

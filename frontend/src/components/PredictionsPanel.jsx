@@ -1,15 +1,48 @@
 import { API_BASE } from "../apiBase";
 import React, { useEffect, useState } from "react";
 import TeamBadge from "./TeamBadge";
+import { EmptyNote, ErrorNote, Section, SkeletonRows, formatDay } from "./ui";
+
+function Prediction({ p }) {
+  const homeFav = p.predicted_winner === p.home;
+  return (
+    <li className="flex flex-col gap-2.5 py-4 border-b border-line/60 last:border-0">
+      <div className="flex items-center justify-between text-xs text-faint">
+        <time dateTime={p.date}>{formatDay(p.date)}</time>
+        <span className="sr-only">Predicted winner: {p.predicted_winner}</span>
+      </div>
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-sm">
+        <div className="flex items-center gap-2 min-w-0">
+          <TeamBadge name={p.home} crest={p.home_crest} size="sm" />
+          <span className={`truncate ${homeFav ? "font-semibold" : "text-muted"}`}>{p.home}</span>
+        </div>
+        <span className="text-xs text-faint">vs</span>
+        <div className="flex items-center justify-end gap-2 min-w-0">
+          <span className={`truncate text-right ${homeFav ? "text-muted" : "font-semibold"}`}>{p.away}</span>
+          <TeamBadge name={p.away} crest={p.away_crest} size="sm" />
+        </div>
+      </div>
+      <div className="flex items-center gap-3 text-xs tabular-nums">
+        <span className={`w-10 ${homeFav ? "text-accent font-semibold" : "text-muted"}`}>{p.home_win_pct}%</span>
+        <div className="flex-1 flex gap-0.5 h-1.5" role="img" aria-label={`${p.home} ${p.home_win_pct}%, ${p.away} ${p.away_win_pct}%`}>
+          <div className={`rounded-full ${homeFav ? "bg-accent" : "bg-faint/50"}`} style={{ width: `${p.home_win_pct}%` }} />
+          <div className={`rounded-full ${homeFav ? "bg-faint/50" : "bg-accent"}`} style={{ width: `${p.away_win_pct}%` }} />
+        </div>
+        <span className={`w-10 text-right ${homeFav ? "text-muted" : "text-accent font-semibold"}`}>{p.away_win_pct}%</span>
+      </div>
+    </li>
+  );
+}
 
 export default function PredictionsPanel({ league }) {
-  const [predictions, setPredictions] = useState([]);
+  const [predictions, setPredictions] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
     if (!league) return;
 
     setError(null);
+    setPredictions(null);
     fetch(`${API_BASE}/predictions?league=${league}`)
       .then((res) => res.json())
       .then((data) => {
@@ -28,62 +61,20 @@ export default function PredictionsPanel({ league }) {
   }, [league]);
 
   return (
-    <div className="max-w-5xl mx-auto w-full bg-slate-900/70 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-lg shadow-black/20">
-      <h2 className="text-xl font-bold mb-6">🔮 Upcoming Fixture Predictions</h2>
-
-      {error && <p className="font-semibold text-rose-400">{error}</p>}
-
-      {!error && predictions.length === 0 && <p className="text-slate-400">No upcoming fixtures found.</p>}
-
-      {!error && predictions.length > 0 && (
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="bg-slate-800/80 text-slate-300">
-                <th className="px-4 py-3 text-left font-semibold border-b border-slate-700">Date</th>
-                <th className="px-4 py-3 text-left font-semibold border-b border-slate-700">Home</th>
-                <th className="px-4 py-3 text-left font-semibold border-b border-slate-700">Away</th>
-                <th className="px-4 py-3 text-center font-semibold border-b border-slate-700">Predicted Winner</th>
-                <th className="px-4 py-3 text-center font-semibold border-b border-slate-700">Win Probability</th>
-              </tr>
-            </thead>
-            <tbody>
-              {predictions.map((p, idx) => (
-                <tr key={idx} className="border-b border-slate-800 hover:bg-slate-800/40">
-                  <td className="px-4 py-3 text-slate-400">{p.date}</td>
-                  <td className="px-4 py-3 font-semibold">
-                    <div className="flex items-center gap-2">
-                      <TeamBadge name={p.home} crest={p.home_crest} size="sm" />
-                      {p.home}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 font-semibold">
-                    <div className="flex items-center gap-2">
-                      <TeamBadge name={p.away} crest={p.away_crest} size="sm" />
-                      {p.away}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-center font-bold text-emerald-400">{p.predicted_winner}</td>
-                  <td className="px-4 py-3 text-center">
-                    <div className="flex items-center gap-2">
-                      <span className="w-24 text-right text-xs text-slate-400">
-                        {p.home}: {p.home_win_pct}%
-                      </span>
-                      <div className="flex-1 h-2 rounded-full bg-slate-800 overflow-hidden flex min-w-[6rem]">
-                        <div className="h-full bg-violet-500" style={{ width: `${p.home_win_pct}%` }} />
-                        <div className="h-full bg-rose-500" style={{ width: `${p.away_win_pct}%` }} />
-                      </div>
-                      <span className="w-24 text-left text-xs text-slate-400">
-                        {p.away}: {p.away_win_pct}%
-                      </span>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+    <Section title="Predictions" aside="Elo model, last 90 days">
+      {error ? (
+        <ErrorNote>{error}</ErrorNote>
+      ) : predictions === null ? (
+        <SkeletonRows rows={4} />
+      ) : predictions.length === 0 ? (
+        <EmptyNote>No upcoming fixtures found.</EmptyNote>
+      ) : (
+        <ul className="-mt-4">
+          {predictions.map((p, idx) => (
+            <Prediction key={idx} p={p} />
+          ))}
+        </ul>
       )}
-    </div>
+    </Section>
   );
 }
