@@ -27,7 +27,6 @@ export default function NewsFeed({ teams }) {
         setError("Could not reach the backend");
         setItems([]);
       });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
   if (error) return <ErrorNote>{error}</ErrorNote>;

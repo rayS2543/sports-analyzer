@@ -27,7 +27,9 @@ export function FavoritesProvider({ children }) {
         : [...old, { league, name }];
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-      } catch {}
+      } catch {
+        // localStorage unavailable (private browsing, quota, etc.) -- favoriting still works for this session.
+      }
       return next;
     });
   }
