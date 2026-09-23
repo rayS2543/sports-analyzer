@@ -1,7 +1,13 @@
+import json
 import time
 from functools import wraps
 
 _store = {}
+
+
+def clear():
+    """Drop every cached entry. Used to isolate tests from each other."""
+    _store.clear()
 
 
 def cached(ttl_seconds):
@@ -15,7 +21,7 @@ def cached(ttl_seconds):
     def decorator(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
-            key = (fn.__module__, fn.__qualname__, args, tuple(sorted(kwargs.items())))
+            key = (fn.__module__, fn.__qualname__, args, json.dumps(kwargs, sort_keys=True, default=str))
             now = time.monotonic()
             cached_entry = _store.get(key)
             if cached_entry is not None:

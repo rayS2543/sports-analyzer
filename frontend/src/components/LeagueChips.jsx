@@ -1,6 +1,13 @@
 import { API_BASE } from "../apiBase";
 import React, { useEffect, useState } from "react";
 
+export const chipClasses = (active) =>
+  `pressable shrink-0 rounded-full px-3.5 h-8 text-sm font-medium border whitespace-nowrap ${
+    active
+      ? "bg-accent border-accent text-accent-fg"
+      : "border-line text-muted hover:text-fg hover:border-faint"
+  }`;
+
 export default function LeagueChips({ selected, onChange }) {
   const [leagues, setLeagues] = useState([]);
 
@@ -23,23 +30,19 @@ export default function LeagueChips({ selected, onChange }) {
     }
   };
 
-  const chipClasses = (active) =>
-    `rounded-full px-4 py-1.5 text-sm font-semibold border transition-colors ${
-      active
-        ? "bg-violet-600 border-violet-500 text-white"
-        : "bg-slate-900 border-slate-700 text-slate-300 hover:border-slate-500"
-    }`;
-
   return (
-    <div className="flex flex-wrap gap-2">
-      <button onClick={() => onChange([])} className={chipClasses(allSelected)}>
+    <div className="flex gap-2 overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0 sm:flex-wrap [scrollbar-width:none]" role="group" aria-label="Filter by league">
+      <button type="button" aria-pressed={allSelected} onClick={() => onChange([])} className={chipClasses(allSelected)}>
         All
       </button>
-      {leagues.map((l) => (
-        <button key={l.code} onClick={() => toggle(l.code)} className={chipClasses(!allSelected && selected.includes(l.code))}>
-          {l.name}
-        </button>
-      ))}
+      {leagues.map((l) => {
+        const active = !allSelected && selected.includes(l.code);
+        return (
+          <button key={l.code} type="button" aria-pressed={active} onClick={() => toggle(l.code)} className={chipClasses(active)}>
+            {l.name}
+          </button>
+        );
+      })}
     </div>
   );
 }

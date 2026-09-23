@@ -5,41 +5,42 @@ import StandingsTable from "./StandingsTable";
 import MatchesTable from "./MatchesTable";
 import PredictionsPanel from "./PredictionsPanel";
 import TeamsList from "./TeamsList";
+import { LEAGUE_NAMES, PageShell } from "./ui";
 
 export default function Dashboard() {
   const [selectedLeague, setSelectedLeague] = useState("PD");
   const [leagues, setLeagues] = useState([]);
 
-  const selectedLeagueName =
-    leagues.find((l) => l.code === selectedLeague)?.name || "";
+  const current = leagues.find((l) => l.code === selectedLeague);
+  const selectedLeagueName = current?.name || LEAGUE_NAMES[selectedLeague] || "";
 
   return (
-    <>
-      <header className="border-b border-slate-800 px-6 sm:px-10 py-5">
-        <div className="max-w-5xl mx-auto flex items-center justify-between">
-          <h1 className="text-xl font-bold tracking-tight flex items-center gap-2">
-            <span className="text-violet-400">⚽</span> Sports Analyzer
-          </h1>
-        </div>
-      </header>
+    <PageShell>
+      <TodayGames />
 
-      <main className="px-6 sm:px-10 py-10 flex flex-col gap-12">
-        <TodayGames />
-
-        <section className="max-w-5xl mx-auto w-full flex flex-col gap-6">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-            <h2 className="text-lg font-bold text-slate-300 uppercase tracking-wide">League Explorer</h2>
-            <LeagueSelector league={selectedLeague} onChange={setSelectedLeague} onLeaguesLoaded={setLeagues} />
+      <section className="flex flex-col gap-8" aria-labelledby="league-heading">
+        <div className="flex flex-col gap-4 border-t border-line pt-8">
+          <div className="flex items-baseline gap-3">
+            <h2 id="league-heading" className="text-2xl sm:text-3xl font-semibold tracking-tight">
+              {selectedLeagueName}
+            </h2>
+            {current?.country && <span className="text-sm text-muted">{current.country}</span>}
           </div>
+          <LeagueSelector league={selectedLeague} onChange={setSelectedLeague} onLeaguesLoaded={setLeagues} />
+        </div>
 
-          <div className="flex flex-col gap-8">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-x-10 gap-y-12">
+          <div className="lg:col-span-7 min-w-0">
             <StandingsTable league={selectedLeague} />
+          </div>
+          <div className="lg:col-span-5 flex flex-col gap-12 min-w-0">
             <MatchesTable league={selectedLeague} leagueName={selectedLeagueName} />
             <PredictionsPanel league={selectedLeague} />
-            <TeamsList league={selectedLeague} />
           </div>
-        </section>
-      </main>
-    </>
+        </div>
+
+        <TeamsList league={selectedLeague} />
+      </section>
+    </PageShell>
   );
 }

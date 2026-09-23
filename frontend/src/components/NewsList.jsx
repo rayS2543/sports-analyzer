@@ -1,5 +1,6 @@
 import { API_BASE } from "../apiBase";
 import React, { useEffect, useState } from "react";
+import { EmptyNote, SkeletonRows } from "./ui";
 
 export default function NewsList({ query }) {
   const [items, setItems] = useState([]);
@@ -18,17 +19,24 @@ export default function NewsList({ query }) {
       .finally(() => setLoading(false));
   }, [query]);
 
-  if (loading) return <p className="text-slate-400">Loading headlines...</p>;
-  if (items.length === 0) return <p className="text-slate-400">No headlines found.</p>;
+  if (loading) return <SkeletonRows rows={3} />;
+  if (items.length === 0) return <EmptyNote>No headlines found.</EmptyNote>;
 
   return (
-    <ul className="flex flex-col gap-3">
+    <ul className="flex flex-col">
       {items.map((n, idx) => (
-        <li key={idx}>
-          <a href={n.link} target="_blank" rel="noreferrer" className="text-violet-400 hover:text-violet-300 font-medium">
-            {n.title}
+        <li key={idx} className="border-b border-line/60 last:border-0">
+          <a
+            href={n.link}
+            target="_blank"
+            rel="noreferrer"
+            className="group flex flex-col gap-1 py-3.5 sm:flex-row sm:items-baseline sm:justify-between sm:gap-6"
+          >
+            <span className="font-medium group-hover:text-accent group-hover:underline transition-colors duration-150 max-w-[65ch]">
+              {n.title}
+            </span>
+            {n.source && <span className="text-xs text-faint shrink-0">{n.source}</span>}
           </a>
-          {n.source && <span className="text-xs text-slate-500 ml-2">{n.source}</span>}
         </li>
       ))}
     </ul>

@@ -17,8 +17,9 @@ node_modules/
 dist/
 frontend/coverage/
 
-# Claude Code agent worktree scratch space
-.claude/
+# Claude Code agent worktree scratch space (shared skills are tracked)
+.claude/*
+!.claude/skills/
 
 *.log
 .DS_Store

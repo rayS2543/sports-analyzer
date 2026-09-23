@@ -1,24 +1,5 @@
 import React, { useState } from "react";
 
-const PALETTE = [
-  "bg-rose-500",
-  "bg-amber-500",
-  "bg-emerald-500",
-  "bg-sky-500",
-  "bg-violet-500",
-  "bg-fuchsia-500",
-  "bg-orange-500",
-  "bg-teal-500",
-];
-
-function colorFor(name) {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) {
-    hash = name.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  return PALETTE[Math.abs(hash) % PALETTE.length];
-}
-
 function initialsFor(name, tla) {
   if (tla) return tla.slice(0, 3).toUpperCase();
   return name
@@ -30,9 +11,10 @@ function initialsFor(name, tla) {
 }
 
 const SIZE_CLASSES = {
-  sm: "w-7 h-7 text-[10px]",
-  md: "w-9 h-9 text-xs",
-  lg: "w-20 h-20 text-2xl",
+  sm: "w-6 h-6 text-[9px]",
+  md: "w-8 h-8 text-[10px]",
+  lg: "w-14 h-14 text-sm",
+  xl: "w-20 h-20 text-lg",
 };
 
 export default function TeamBadge({ name, tla, crest, size = "md" }) {
@@ -43,18 +25,21 @@ export default function TeamBadge({ name, tla, crest, size = "md" }) {
     return (
       <img
         src={crest}
-        alt={name}
+        alt=""
         title={name}
+        loading="lazy"
         className={`inline-block object-contain shrink-0 ${sizeClasses}`}
         onError={() => setImgFailed(true)}
       />
     );
   }
 
+  // Neutral monogram so a missing crest never reads as team colours.
   return (
     <span
-      className={`inline-flex items-center justify-center rounded-full font-bold text-white shrink-0 ${sizeClasses} ${colorFor(name)}`}
+      className={`inline-flex items-center justify-center rounded-md bg-raised ring-1 ring-inset ring-line font-semibold tracking-tight text-muted shrink-0 ${sizeClasses}`}
       title={name}
+      aria-hidden="true"
     >
       {initialsFor(name, tla)}
     </span>
