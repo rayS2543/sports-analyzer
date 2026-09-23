@@ -2,6 +2,8 @@ import os
 
 import requests
 
+from cache import cached
+
 BASE_URL = "https://api.football-data.org/v4"
 
 
@@ -17,12 +19,17 @@ def _headers():
     return {"X-Auth-Token": api_key}
 
 
+@cached(ttl_seconds=180)
 def get(path, params=None):
     """GET an endpoint under football-data.org's v4 API.
 
     Raises FootballDataError with a clean message on non-2xx responses,
     including the free-tier 403 you get for competitions outside the
     current plan, so route handlers don't need to special-case it.
+
+    Cached for 3 minutes (keyed by path + params) since football-data.org's
+    free tier rate-limits hard and every dashboard load fans out to
+    /matches, /teams, and /standings at once.
     """
     try:
         response = requests.get(f"{BASE_URL}{path}", headers=_headers(), params=params, timeout=10)

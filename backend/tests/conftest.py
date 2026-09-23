@@ -1,3 +1,4 @@
+import cache
 import pytest
 
 from backend import db
@@ -11,6 +12,15 @@ def isolated_db(tmp_path, monkeypatch):
     monkeypatch.setenv("SPORTS_ANALYZER_DB_PATH", str(tmp_path / "test.db"))
     db.init_db()
     yield
+
+
+@pytest.fixture(autouse=True)
+def isolated_cache():
+    """Give every test a fresh cache so a cached response from one test
+    never leaks into another."""
+    cache.clear()
+    yield
+    cache.clear()
 
 
 @pytest.fixture
