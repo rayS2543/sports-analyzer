@@ -212,6 +212,30 @@ def test_predictions_chunks_finished_matches_lookback_into_10_day_windows(client
         assert span.days <= 10
 
 
+def test_predictions_reuses_history_after_live_data_cache_expires(client):
+    with patch("cache.time.monotonic", return_value=0) as clock, patch(
+        "football_client.requests.get", return_value=FakeResponse({"matches": []})
+    ) as upstream:
+        assert client.get("/predictions?league=PD").status_code == 200
+        upstream.reset_mock()
+
+        clock.return_value = 181
+        assert client.get("/predictions?league=PD").status_code == 200
+        assert upstream.call_count == 1
+        assert upstream.call_args.kwargs["params"]["status"] == "SCHEDULED,TIMED"
+
+        # A different league still needs its own history.
+        upstream.reset_mock()
+        assert client.get("/predictions?league=PL").status_code == 200
+        assert upstream.call_count > 1
+
+        # Historical results eventually refresh too.
+        upstream.reset_mock()
+        clock.return_value = 3601
+        assert client.get("/predictions?league=PD").status_code == 200
+        assert upstream.call_count > 1
+
+
 def test_predictions_merges_matches_from_every_finished_chunk(client):
     upcoming_payload = {
         "matches": [make_match("Real Madrid", "Barcelona", None, None, "2024-02-01")]

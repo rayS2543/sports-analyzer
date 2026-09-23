@@ -56,10 +56,12 @@ def get(path, params=None):
     return response.json()
 
 
+@cached(ttl_seconds=3600)
 def get_matches_over_range(competitions, status, date_from, date_to, max_days=10):
     """GET /matches over a date range that may exceed football-data.org's
     10-day-per-request limit on the free tier, by chunking into <=max_days
-    windows and merging the results.
+    windows and merging the results. Cache the prediction history for an hour
+    so it isn't fetched again whenever the 3-minute live-data cache expires.
     """
     matches = []
     chunk_start = date_from
