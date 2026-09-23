@@ -60,11 +60,16 @@ def _fetch_page_props(path):
     return data["props"]["pageProps"]
 
 
+# FotMob's own team names already have common legal-form suffixes/words
+# stripped (e.g. "Villarreal" not "Villarreal CF", "Levante" not "Levante
+# UD"), but football-data.org's don't — so normalization has to drop these
+# as whole words, not just as substrings, to line the two up.
+_STRIP_WORDS = {"fc", "cf", "ud", "sd", "cd", "rcd", "ca", "afc", "ac", "sad", "and", "hove", "albion"}
+
+
 def _normalize(name):
-    name = (name or "").lower()
-    for suffix in (" fc", "fc ", " cf", "cf ", " sad", " ac", "ac ", " and hove albion", " afc"):
-        name = name.replace(suffix, " ")
-    return re.sub(r"\s+", " ", name).strip()
+    words = re.findall(r"\w+", (name or "").lower())
+    return " ".join(w for w in words if w not in _STRIP_WORDS)
 
 
 @cached(ttl_seconds=None)
