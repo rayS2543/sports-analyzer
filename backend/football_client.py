@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 
 import requests
 
@@ -46,3 +47,26 @@ def get(path, params=None):
         )
 
     return response.json()
+
+
+def get_matches_over_range(competitions, status, date_from, date_to, max_days=10):
+    """GET /matches over a date range that may exceed football-data.org's
+    10-day-per-request limit on the free tier, by chunking into <=max_days
+    windows and merging the results.
+    """
+    matches = []
+    chunk_start = date_from
+    while chunk_start <= date_to:
+        chunk_end = min(chunk_start + timedelta(days=max_days), date_to)
+        data = get(
+            "/matches",
+            params={
+                "competitions": competitions,
+                "status": status,
+                "dateFrom": chunk_start.isoformat(),
+                "dateTo": chunk_end.isoformat(),
+            },
+        )
+        matches.extend(data.get("matches", []))
+        chunk_start = chunk_end + timedelta(days=1)
+    return {"matches": matches}

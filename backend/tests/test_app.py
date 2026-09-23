@@ -1,5 +1,6 @@
 import itertools
 import json
+from datetime import date
 from unittest.mock import patch
 
 import pytest
@@ -190,8 +191,44 @@ def test_predictions_requests_timed_matches_alongside_scheduled(client):
     with patch("football_client.requests.get", side_effect=fake_get):
         client.get("/predictions")
 
-    upcoming_call = next(c for c in calls if c["dateTo"] != c["dateFrom"] and "status" in c and c["status"] != "FINISHED")
+    upcoming_call = next(c for c in calls if c["status"] != "FINISHED")
     assert upcoming_call["status"] == "SCHEDULED,TIMED"
+
+
+def test_predictions_chunks_finished_matches_lookback_into_10_day_windows(client):
+    calls = []
+
+    def fake_get(url, headers=None, params=None, timeout=10):
+        calls.append(params)
+        return FakeResponse({"matches": []})
+
+    with patch("football_client.requests.get", side_effect=fake_get):
+        client.get("/predictions")
+
+    finished_calls = [c for c in calls if c["status"] == "FINISHED"]
+    assert len(finished_calls) > 1
+    for c in finished_calls:
+        span = date.fromisoformat(c["dateTo"]) - date.fromisoformat(c["dateFrom"])
+        assert span.days <= 10
+
+
+def test_predictions_merges_matches_from_every_finished_chunk(client):
+    upcoming_payload = {
+        "matches": [make_match("Real Madrid", "Barcelona", None, None, "2024-02-01")]
+    }
+
+    def fake_get(url, headers=None, params=None, timeout=10):
+        if params.get("status") == "FINISHED":
+            date_str = params["dateFrom"]
+            return FakeResponse(
+                {"matches": [make_match("Home", "Away", 1, 0, date_str)]}
+            )
+        return FakeResponse(upcoming_payload)
+
+    with patch("football_client.requests.get", side_effect=fake_get):
+        resp = client.get("/predictions")
+
+    assert resp.status_code == 200
 
 
 def test_predictions_picks_higher_rated_team_as_winner(client):
