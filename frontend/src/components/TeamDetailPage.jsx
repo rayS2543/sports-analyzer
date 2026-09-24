@@ -52,7 +52,7 @@ export default function TeamDetailPage() {
   return (
     <PageShell back>
       <section className="flex items-center gap-5">
-        <TeamBadge name={teamName} size="xl" />
+        <TeamBadge name={teamName} league={league} size="xl" />
         <div className="flex flex-col gap-1 min-w-0 flex-1">
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">{teamName}</h1>
           <p className="text-sm text-muted">{LEAGUE_NAMES[league] || league}</p>

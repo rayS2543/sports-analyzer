@@ -1,4 +1,4 @@
-import { API_BASE } from "../apiBase";
+import { getTeams } from "../teamAssets";
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import TeamBadge from "./TeamBadge";
@@ -10,8 +10,7 @@ export default function TeamsList({ league }) {
 
   useEffect(() => {
     setError(null);
-    fetch(`${API_BASE}/teams?league=${league}`)
-      .then((res) => res.json())
+    getTeams(league)
       .then((data) => {
         if (Array.isArray(data)) {
           setTeams(data);
@@ -23,7 +22,7 @@ export default function TeamsList({ league }) {
       .catch((err) => {
         console.error("Error fetching teams:", err);
         setTeams([]);
-        setError("Could not reach the backend");
+        setError(err.message || "Could not reach the backend");
       });
   }, [league]);
 

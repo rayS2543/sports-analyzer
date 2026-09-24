@@ -1,5 +1,6 @@
 import json
 import re
+import unicodedata
 
 import requests
 
@@ -67,12 +68,66 @@ def _fetch_page_props(path):
 _STRIP_WORDS = {"fc", "cf", "ud", "sd", "cd", "rcd", "ca", "afc", "ac", "sad", "and", "hove", "albion"}
 
 
+# Exact provider aliases, checked against each supported league's club list.
+# Avoid fuzzy/substring matching: similarly named clubs must stay distinct.
+_TEAM_ALIASES = {
+    official.casefold(): fotmob
+    for official, fotmob in {
+        "Club Atlético de Madrid": "Atlético Madrid",
+        "RCD Espanyol de Barcelona": "Espanyol",
+        "Rayo Vallecano de Madrid": "Rayo Vallecano",
+        "Real Betis Balompié": "Real Betis",
+        "Real Sociedad de Fútbol": "Real Sociedad",
+        "RC Celta de Vigo": "Celta Vigo",
+        "RC Deportivo La Coruña": "Deportivo A Coruña",
+        "Real Racing Club de Santander": "Racing Santander",
+        "ACF Fiorentina": "Fiorentina",
+        "AS Roma": "Roma",
+        "Atalanta BC": "Atalanta",
+        "Bologna FC 1909": "Bologna",
+        "Cagliari Calcio": "Cagliari",
+        "Genoa CFC": "Genoa",
+        "FC Internazionale Milano": "Inter",
+        "SS Lazio": "Lazio",
+        "Parma Calcio 1913": "Parma",
+        "SSC Napoli": "Napoli",
+        "Udinese Calcio": "Udinese",
+        "Frosinone Calcio": "Frosinone",
+        "US Sassuolo Calcio": "Sassuolo",
+        "US Lecce": "Lecce",
+        "Como 1907": "Como",
+        "TSG 1899 Hoffenheim": "Hoffenheim",
+        "Bayer 04 Leverkusen": "Bayer Leverkusen",
+        "SV Werder Bremen": "Werder Bremen",
+        "1. FSV Mainz 05": "Mainz 05",
+        "SC Freiburg": "Freiburg",
+        "1. FC Union Berlin": "Union Berlin",
+        "SC Paderborn 07": "Paderborn",
+        "SV 07 Elversberg": "Elversberg",
+        "Stade Brestois 29": "Brest",
+        "Olympique de Marseille": "Marseille",
+        "AJ Auxerre": "Auxerre",
+        "Lille OSC": "Lille",
+        "OGC Nice": "Nice",
+        "Olympique Lyonnais": "Lyon",
+        "Stade Rennais FC 1901": "Rennes",
+        "ES Troyes AC": "Troyes",
+        "Angers SCO": "Angers",
+        "Racing Club de Lens": "Lens",
+        "AS Monaco FC": "Monaco",
+        "RC Strasbourg Alsace": "Strasbourg",
+    }.items()
+}
+
+
 def _normalize(name):
-    words = re.findall(r"\w+", (name or "").lower())
+    name = _TEAM_ALIASES.get((name or "").casefold(), name or "")
+    name = "".join(c for c in unicodedata.normalize("NFKD", name) if not unicodedata.combining(c))
+    words = re.findall(r"\w+", name.casefold())
     return " ".join(w for w in words if w not in _STRIP_WORDS)
 
 
-@cached(ttl_seconds=None)
+@cached(ttl_seconds=300)
 def find_fixture(league_code, date, home_name, away_name):
     """Resolve a (league, date, home, away) match to a FotMob fixture by
     scanning that league's season fixture list for a same-day, name match.
@@ -106,7 +161,14 @@ def find_fixture(league_code, date, home_name, away_name):
     return None
 
 
-@cached(ttl_seconds=None)
-def fetch_lineup(page_url):
+@cached(ttl_seconds=60)
+def fetch_match_content(page_url):
     page_props = _fetch_page_props(page_url)
-    return (page_props.get("content") or {}).get("lineup")
+    content = page_props.get("content") or {}
+    colors = (page_props.get("general") or {}).get("teamColors", {}).get("darkMode", {})
+    event = (page_props.get("seo") or {}).get("eventJSONLD") or {}
+    content["teamAssets"] = {
+        side: {"crest": (event.get(f"{side}Team") or {}).get("logo"), "color": colors.get(side)}
+        for side in ("home", "away")
+    }
+    return content
