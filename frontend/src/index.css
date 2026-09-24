@@ -85,3 +85,49 @@
     animation: none;
   }
 }
+
+/* Match centre: muted turf keeps team markers and chance quality in focus. */
+.football-pitch {
+  position: relative;
+  isolation: isolate;
+  color: #7b9d8b;
+  border: 1px solid #577663;
+  border-radius: 8px;
+  background: repeating-linear-gradient(90deg, #1e3c2f 0%, #1e3c2f 10%, #234334 10%, #234334 20%);
+}
+.football-pitch > svg { border-radius: inherit; }
+.formation-pitch { aspect-ratio: 68 / 98; margin: 8px 0; }
+.formation-player {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 25%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  color: #f3f7f4;
+  z-index: 1;
+}
+.player-shirt { display: block; position: relative; width: 42px; height: 39px; color: var(--team-color); }
+.player-shirt svg { width: 100%; height: 100%; filter: drop-shadow(0 2px 2px #071e1680); }
+.shirt-number { position: absolute; inset: 0; padding-top: 9px; color: #17241e; font-size: 13px; font-weight: 750; font-variant-numeric: tabular-nums; }
+.captain-mark { position: absolute; right: -2px; top: 0; background: #e9eee8; color: #142a1c; border-radius: 50%; font-size: 9px; padding: 0 3px; }
+.player-pitch-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 550; border-radius: 3px; padding: 1px 4px; background: #10251fe8; }
+.player-pitch-meta { display: flex; align-items: center; gap: 4px; font-size: 10px; min-height: 17px; text-shadow: 0 1px 2px #000; }
+.pitch-card { display: inline-block; width: 6px; height: 9px; border-radius: 1px; }
+.formation-player[aria-pressed="true"] .player-pitch-name { background: #f2c14e; color: #1a1406; }
+.formation-player:hover .player-shirt { filter: brightness(1.15); }
+.shot-pitch { aspect-ratio: 105 / 68; margin: 6px 10px; }
+.shot-filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.shot-filters label { font-size: 11px; color: rgb(var(--muted)); }
+.shot-filters select { display: block; width: 100%; margin-top: 6px; background: rgb(var(--surface)); color: rgb(var(--fg)); border: 1px solid rgb(var(--line)); border-radius: 6px; font-size: 12px; padding: 10px 7px; }
+.shot-marker { position: absolute; width: max(24px, var(--shot-size)); height: max(24px, var(--shot-size)); transform: translate(-50%, -50%); display: grid; place-items: center; border-radius: 50%; z-index: 1; }
+.shot-marker > span { display: grid; place-items: center; width: var(--shot-size); height: var(--shot-size); border: 1.5px solid var(--team-color); border-radius: 50%; color: var(--team-color); background: #142f23; font-size: 12px; line-height: 1; }
+.shot-marker[data-goal="true"] > span { background: var(--team-color); color: #12241b; }
+.shot-marker[data-goal="true"] { z-index: 2; }
+.shot-marker[data-selected="true"], .shot-marker:hover, .shot-marker:focus-visible { z-index: 3; }
+.shot-marker[data-selected="true"] > span { outline: 2px solid #fff; outline-offset: 3px; }
+.shot-detail { padding: 20px; border: 1px solid rgb(var(--line)); border-radius: 8px; background: rgb(var(--surface)); min-height: 154px; }
+.shot-nav { border: 1px solid rgb(var(--line)); border-radius: 6px; width: 32px; height: 32px; color: rgb(var(--fg)); }
+.shot-nav:disabled { opacity: .3; cursor: not-allowed; }
+@media (min-width: 640px) and (max-width: 1023px) { .formation-pitch { max-width: 440px; width: 100%; align-self: center; } }
+.striped-shirt-number { text-shadow: 0 0 2px #fff, 1px 0 #fff, -1px 0 #fff, 0 1px #fff, 0 -1px #fff; }

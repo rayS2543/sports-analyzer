@@ -1,14 +1,16 @@
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import TeamsList from "./TeamsList";
+let TeamsList;
 
 const sampleTeams = [
   { name: "Real Madrid CF", shortName: "Real Madrid", tla: "RMA", crest: "rma.png" },
 ];
 
-beforeEach(() => {
+beforeEach(async () => {
+  vi.resetModules();
   global.fetch = vi.fn();
+  TeamsList = (await import("./TeamsList")).default;
 });
 
 afterEach(() => {
