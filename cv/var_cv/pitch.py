@@ -203,7 +203,7 @@ CORR_PX = 40  # correlation length of line-fit residuals along a painted line (p
 FAIL = {"H": None, "support": 0.0, "worst": 0.0, "error_m": float("inf"), "sigma": None}
 
 
-def refine(H, masks, kp_img, kp_pitch, kp_weight=0.2, conic=None, stages=((50.0, 10.0), (20.0, 3.0))):
+def refine(H, masks, kp_img, kp_pitch, kp_weight=0.2, stages=((50.0, 10.0), (20.0, 3.0))):
     """Snap a homography onto the painted lines (chamfer fit) and score it.
 
     masks: (lines, region) from line_mask(). Parameters: pixel offsets of the image
@@ -233,7 +233,7 @@ def refine(H, masks, kp_img, kp_pitch, kp_weight=0.2, conic=None, stages=((50.0,
     if np.isnan(anchors).any():
         return dict(FAIL, H=H)
     st = {"pts": SAMPLES[ok][::2], "kp_img": np.asarray(kp_img, np.float64).reshape(-1, 2),
-          "kp_pitch": np.asarray(kp_pitch, np.float64).reshape(-1, 2), "dmap": None, "use_conic": True}
+          "kp_pitch": np.asarray(kp_pitch, np.float64).reshape(-1, 2), "dmap": None}
 
     def G_of(x):
         return cv2.getPerspectiveTransform(anchors, (a_img + x.reshape(4, 2)).astype(np.float32)).astype(np.float64)
@@ -241,28 +241,12 @@ def refine(H, masks, kp_img, kp_pitch, kp_weight=0.2, conic=None, stages=((50.0,
     def resid(x):
         G = G_of(x)
         k = (project(G, st["kp_pitch"]) - st["kp_img"]).ravel() * kp_weight
-        c = _conic_residual(G, conic, w, h) if conic is not None and st["use_conic"] else np.zeros(0)
-        return np.r_[_sample(st["dmap"], project(G, st["pts"])), np.nan_to_num(k, nan=100.0), c].astype(np.float64)
+        return np.r_[_sample(st["dmap"], project(G, st["pts"])), np.nan_to_num(k, nan=100.0)].astype(np.float64)
 
     def jac(x, step=0.5):  # central differences at a pixel-sized step: smooths the piecewise-linear map
         return np.stack([(resid(x + step * e) - resid(x - step * e)) / (2 * step) for e in np.eye(8)], axis=1)
 
     x = np.zeros(8)
-    if conic is not None:
-        # First solve the circle through its conic alone (it can move the circle far), then add the
-        # straight lines. The model circle's own chamfer samples are left out of that stage: they
-        # sit in the valley between the painted arcs and would hold the circle back.
-        circle_ids = np.arange(len(EDGES), len(EDGES) + 8)
-        saved = st["pts"], st["kp_img"], st["kp_pitch"]
-        st["pts"], st["kp_img"], st["kp_pitch"] = np.zeros((0, 2)), np.zeros((0, 2)), np.zeros((0, 2))
-        # conic has 5 dof, the homography 8: damp the parameters so the 3 free ones stay put
-        x = least_squares(lambda z: np.r_[resid(z), 0.05 * z], x,
-                          jac=lambda z: np.r_[jac(z), 0.05 * np.eye(8)], max_nfev=100).x
-        st["pts"] = SAMPLES[ok][~np.isin(LINE_ID[ok], circle_ids)][::2]
-        st["kp_img"], st["kp_pitch"] = saved[1], saved[2]
-        st["dmap"] = _dist_map(lines, region, 50.0)
-        x = least_squares(resid, x, jac=jac, loss="huber", f_scale=10.0, max_nfev=100).x
-        # the circle stays governed by its conic below; its chamfer samples would pull it back
     for cap, scale in stages:  # coarse-to-fine: wide capture range, then tight fit
         st["dmap"] = _dist_map(lines, region, cap)
         x = least_squares(resid, x, jac=jac, loss="huber", f_scale=scale, max_nfev=50).x
@@ -297,7 +281,7 @@ def refine(H, masks, kp_img, kp_pitch, kp_weight=0.2, conic=None, stages=((50.0,
     err = float(np.sqrt(np.mean((d[near] * m_per_px(Hr, img[ok][near])) ** 2)))
 
     # Parameter covariance from the matched line rows of the Jacobian at the solution.
-    st.update(pts=SAMPLES[ok][near], kp_img=np.zeros((0, 2)), kp_pitch=np.zeros((0, 2)), use_conic=False)
+    st.update(pts=SAMPLES[ok][near], kp_img=np.zeros((0, 2)), kp_pitch=np.zeros((0, 2)))
     J = jac(x)
     s2 = max(float(np.mean(d[near] ** 2)), 1.0)  # px^2; floor = line localisation quantisation
     # Line residuals are strongly correlated along a line (one mis-placed line shifts every sample
@@ -360,28 +344,6 @@ def icp_init(H, masks, radii=(200, 150, 100, 70, 45, 25, 12)):
             return None
         G = Gn
     return np.linalg.inv(G)
-
-
-def _circle_conic():
-    cx, cy, r = LENGTH / 2, WIDTH / 2, CIRCLE_R
-    return np.array([[1, 0, -cx], [0, 1, -cy], [-cx, -cy, cx * cx + cy * cy - r * r]], float)
-
-
-def _norm_conic(C):
-    C = C / np.linalg.norm(C)
-    return C if C[0, 0] + C[1, 1] >= 0 else -C
-
-
-def _conic_residual(G, C_img, w, h, weight=400.0):
-    """Mismatch between the image of the centre circle under G (pitch->image) and a fitted image ellipse,
-    compared as normalised conics in [-1, 1] image coordinates (6 unique entries)."""
-    T = np.array([[2 / w, 0, -1], [0, 2 / h, -1], [0, 0, 1.0]])
-    Hn = np.linalg.inv(T @ G)  # normalised image -> pitch
-    pred = _norm_conic(Hn.T @ _circle_conic() @ Hn)
-    Ti = np.linalg.inv(T)
-    obs = _norm_conic(Ti.T @ C_img @ Ti)
-    d = pred - obs
-    return weight * d[np.triu_indices(3)]
 
 
 def ellipse_to_conic(e):
@@ -464,6 +426,72 @@ def fit_centre_circle(H, masks):
     return ellipse_to_conic(cv2.fitEllipse(inl.astype(np.float32)))
 
 
+def _conic_line(C, l):
+    """Intersections (0 or 2 image points) of conic C with homogeneous line l."""
+    a, b, c = l
+    n2 = a * a + b * b
+    if n2 < 1e-12:
+        return []
+    p0 = np.array([-a * c / n2, -b * c / n2, 1.0])
+    d = np.array([-b, a, 0.0])
+    qa, qb, qc = d @ C @ d, 2 * d @ C @ p0, p0 @ C @ p0
+    disc = qb * qb - 4 * qa * qc
+    if abs(qa) < 1e-15 or disc < 0:
+        return []
+    ts = [(-qb + sgn * np.sqrt(disc)) / (2 * qa) for sgn in (1, -1)]
+    return [(p0 + t * d)[:2] for t in ts]
+
+
+def _fit_image_line(l, masks, band=12):
+    """Refit an image line to the painted line-centre pixels within `band` px of the predicted line l."""
+    skel = _skeleton(masks[0])
+    skel[masks[1] == 0] = 0
+    ys, xs = np.nonzero(skel)
+    P = np.c_[xs, ys].astype(np.float64)
+    dist = np.abs(P @ l[:2] + l[2]) / max(np.hypot(l[0], l[1]), 1e-12)
+    P = P[dist < band]
+    if len(P) < 40:
+        return l
+    vx, vy, x0, y0 = cv2.fitLine(P.astype(np.float32), cv2.DIST_HUBER, 0, 0.01, 0.01).ravel()
+    return np.cross([x0, y0, 1.0], [x0 + vx, y0 + vy, 1.0])
+
+
+def circle_pose(H, masks, iters=4):
+    """Re-solve the homography from the painted centre circle and halfway line.
+
+    Keypoint fits often get the circle's size badly wrong (on the Alaves-Real Madrid wide camera
+    by ~40%), and the chamfer fit cannot escape: the model circle settles in the valley between the
+    painted arcs. The painted circle's image is an ellipse; with the halfway line and the current
+    vanishing point it yields four exact correspondences: circle x halfway line (pitch keypoints 15,
+    16) and the tangent points towards the across-pitch vanishing point (31, 32). Iterated a few
+    times since the vanishing point comes from the current estimate. Returns image->pitch H or None.
+    """
+    C = fit_centre_circle(H, masks)
+    if C is None:
+        return None
+    cx, cy, r = LENGTH / 2, WIDTH / 2, CIRCLE_R
+    world = {"15": (cx, cy - r), "16": (cx, cy + r), "31": (cx - r, cy), "32": (cx + r, cy)}
+    for _ in range(iters):
+        G = np.linalg.inv(H)
+        l = np.cross(G @ [cx, 0, 1.0], G @ [cx, WIDTH, 1.0])
+        l = _fit_image_line(l, masks)
+        pts = {}
+        for (ka, kb), found in ((("15", "16"), _conic_line(C, l)),
+                                (("31", "32"), _conic_line(C, C @ (G @ [0, 1, 0.0])))):  # tangents from V_y
+            if len(found) != 2:
+                return None
+            pa, pb = project(G, [world[ka], world[kb]])
+            d = pb - pa  # order the two intersections the way the current estimate orders them
+            first, second = sorted(found, key=lambda q: float(np.dot(q - pa, d)))
+            pts[ka], pts[kb] = first, second
+        keys = sorted(pts)
+        Hn, _ = cv2.findHomography(np.array([pts[k] for k in keys]), np.array([world[k] for k in keys], float), 0)
+        if Hn is None:
+            return None
+        H = Hn
+    return H
+
+
 MAX_LOO_M = 3.0  # loose keypoint-only gate; the line checks are the real test
 KP_CONF = 0.5
 BORDER_PX = 8  # keypoints this close to the frame edge are usually clipped predictions
@@ -519,19 +547,17 @@ def calibrate_frame(frame, kps, masks=None):
         if passes(r):
             break
     if best is not None and not passes(best):
-        # keypoint fit far off: large-radius ICP and/or the centre-circle conic, then the same checks
+        # keypoint fit far off: re-solve from the painted centre circle, or pull it in with
+        # large-radius ICP, then the same refinement and line checks
         none = np.zeros((0, 2))
-        starts = [h0 for h0 in (icp_init(best["H"], masks), best["H"]) if h0 is not None]
-        for h0 in starts:
-            if not orientation_ok(h0, masks[0].shape):
+        for start in (circle_pose, icp_init):
+            h0 = start(best["H"], masks)
+            if h0 is None or not orientation_ok(h0, masks[0].shape):
                 continue
-            conic = fit_centre_circle(h0, masks)
-            for c in ([conic] if conic is not None else []) + [None]:
-                r = refine(h0, masks, none, none, conic=c)
-                r["loo_m"] = best.get("loo_m")
-                if passes(r) and (not passes(best) or r["support"] > best["support"]):
-                    best = r
-            if passes(best):
+            r = refine(h0, masks, none, none)
+            r["loo_m"] = best.get("loo_m")
+            if passes(r):
+                best = r
                 break
     if best is None:
         if out["keypoints"] < 4:

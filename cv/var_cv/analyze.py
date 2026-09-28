@@ -40,9 +40,11 @@ ROLES = {1: "goalkeeper", 2: "player", 3: "referee"}  # player model classes; 0 
 PERSON_CONF, BALL_CONF = 0.4, 0.3
 OFF_PITCH_MARGIN_M = 5.0  # detections projecting further outside the pitch are not players on it
 # Looked-up venue dimensions (metres). Unknown venues fall back to the FIFA-recommended size, flagged unverified.
-VENUES = {
+VENUES = {  # keys: ESPN gameInfo.venue.fullName, lower-case
     "estadi johan cruyff": (105.0, 68.0, "Estadi Johan Cruyff, field size 105 m x 68 m "
                                          "(https://en.wikipedia.org/wiki/Johan_Cruyff_Stadium)"),
+    "mendizorroza": (105.0, 68.0, "Mendizorrotza, field size 105 m x 68 m "
+                                  "(https://en.wikipedia.org/wiki/Mendizorrotza_Stadium)"),
 }
 DEFAULT_PITCH = (105.0, 68.0, "unverified for this venue: FIFA-recommended 105 m x 68 m assumed")
 ASSUMPTIONS = [
@@ -145,7 +147,7 @@ def detect(frame, models, dev):
     if len(balls):
         j = int(np.argmax(balls.confidence))
         ball = {"xyxy": balls.xyxy[j].tolist(), "confidence": float(balls.confidence[j])}
-    feats = [teams.jersey_feature(frame, b) if c in (1, 2) else None for b, c in zip(people.xyxy, people.class_id)]
+    feats = [teams.kit_feature(frame, b) if c in (1, 2) else None for b, c in zip(people.xyxy, people.class_id)]
     return {"cal": cal, "masks": masks, "kps": kps, "people": people, "feats": feats, "ball": ball}
 
 
@@ -198,6 +200,35 @@ def track_shot(recs):
     return out
 
 
+MIN_WIDE_CROPS = 30
+
+
+def team_model(recs, cache):
+    """Kit colours for the clip. Prefer a model fitted earlier on this clip's wide, calibrated
+    frames (close-ups and replays reuse it, so labels stay consistent across windows); otherwise fit
+    on this window's outfield-player crops weighted by detection confidence and size, and cache it
+    when enough of them come from calibrated wide frames."""
+    try:
+        return teams.TeamModel.from_json(json.loads(cache.read_text()))
+    except (OSError, ValueError, KeyError):
+        pass
+    feats, weights, wide = [], [], 0
+    for r in recs:
+        for f, c, box, conf in zip(r["feats"], r["people"].class_id, r["people"].xyxy, r["people"].confidence):
+            if f is None or c != 2:
+                continue
+            feats.append(f)
+            weights.append(float(conf) * min(1.0, (box[3] - box[1]) / 60.0))
+            wide += bool(r["cal"]["ok"])
+    model = teams.fit(feats, np.array(weights) if feats else None)
+    if model is not None and wide >= MIN_WIDE_CROPS:
+        try:
+            write_json(cache, model.to_json())
+        except OSError:
+            pass
+    return model
+
+
 def near_goal(x, y):
     return (x < 20 or x > pitch.LENGTH - 20) and abs(y - pitch.WIDTH / 2) < 22
 
@@ -230,9 +261,10 @@ def assign_tracks(recs, tracked, model):
             p = np.mean(pos[tid], axis=0) if tid in pos else None
             role[tid] = "goalkeeper" if p is not None and near_goal(*p) else "referee"
         if role[tid] == "player":
-            votes = Counter(model.predict(x) for x in f)
+            clear = [x for x in f if model.margin(x) > 0.15] or f  # ambiguous crops (occlusion, blur) don't vote
+            votes = Counter(model.predict(x) for x in clear)
             team[tid], n = votes.most_common(1)[0]
-            score[tid] = n / len(f)
+            score[tid] = n / len(clear)
     gk_votes = {}
     for rec, pairs in zip(recs, tracked):  # keepers: nearest team block along the pitch (image x if uncalibrated)
         H = rec["cal"]["H"] if rec["cal"]["ok"] else None
@@ -375,7 +407,7 @@ def run(args):
     cap.release()
 
     progress("tracking", 0.88, "shots, calibration propagation, tracking, teams")
-    model = teams.fit([f for r in recs for f, c in zip(r["feats"], r["people"].class_id) if f is not None and c == 2])
+    model = team_model(recs, video.parent / "team_model.json")
     shot_list, frames = [], []
     for sid, (a, b) in enumerate(shots.find_shots(sigs, fps)):
         srecs = [r for r in recs if f0 + a <= r["frame"] <= f0 + b]

@@ -121,3 +121,25 @@ def test_duplicate_and_fragmented_tracks_are_merged():
     id_map, drop = track.merge_tracks(frames, [0.1 * k for k in range(10)])
     assert id_map[2] == id_map[1] == id_map[4] and id_map[3] == 3
     assert {(k, 2) for k in range(6)} <= drop and not any(t == 1 for _, t in drop)
+
+
+def _kit_frame(kind, seed):
+    """A 100x40 player box on grass: white kit, or blue/white vertical stripes (Alaves-style)."""
+    rng = np.random.default_rng(seed)
+    img = np.zeros((120, 60, 3), np.uint8)
+    img[:] = (40, 140, 40)
+    shirt = np.full((50, 40, 3), (235, 235, 235), np.uint8)
+    if kind == "stripes":
+        for x in range(0, 40, 8):
+            shirt[:, x:x + 4] = (180, 70, 20)  # BGR blue
+    img[20:70, 10:50] = shirt
+    shade = rng.uniform(0.6, 1.0)  # lighting / shadow
+    return (img * shade).astype(np.uint8), (10, 10, 50, 110)
+
+
+def test_kit_signatures_separate_striped_and_white_kits_under_shading():
+    feats = [teams.kit_feature(*_kit_frame(k, i)) for i in range(10) for k in ("white", "stripes")]
+    model = teams.fit(feats)
+    labels = [model.predict(teams.kit_feature(*_kit_frame(k, 100 + i))) for i in range(5) for k in ("white", "stripes")]
+    assert labels == ["A", "B"] * 5  # white is the lighter kit -> A
+    assert teams.TeamModel.from_json(model.to_json()).colours() == model.colours()

@@ -708,43 +708,56 @@ def _foot_ball_m(r, j, uv, wb=None):
     return d / body_height_px(kps, box) * BODY_M
 
 
-def _studs(models, recs, ic, ci, side, target, loc_q):
-    """Sole towards the opponent, from Halpe26 heel/big toe/small toe within ~0.1 s of the contact, using only
-    frames where that foot is AT the struck point (sole midpoint within 0.2 body heights of it): earlier in the
-    swing the foot is elsewhere and its orientation says nothing about the contact. Of those, the frame where
-    the foot is both confidently detected and least foreshortened is used."""
+def _studs(models, recs, ic, ci, side, seg, loc_q):
+    """Sole towards the opponent, from Halpe26 heel/big toe/small toe while the foot is IN CONTACT: from 0.1 s
+    before the contact frame to 0.3 s after it (the boot often rotates into view as it slides down the leg),
+    keeping only frames where the sole midpoint is within 0.2 body heights of the struck segment of the
+    opponent as posed in that same frame. Of those, the frame where the foot is both confidently detected
+    and least foreshortened is used; the spread over the other usable frames is reported."""
     label = "Studs / sole towards the opponent"
-    span = max(2, round(0.1 * _fps(recs)))
-    best = None
-    for r in recs[max(0, ic - span):ic + span + 1]:
-        if r["kps"][ci] is None and r is not recs[ic]:
+    fps = _fps(recs)
+    vi = 1 - ci
+    best, usable, seen = None, [], 0
+    for r in recs[max(0, ic - round(0.1 * fps)):ic + round(0.3 * fps) + 1]:
+        if None in r["boxes"]:
             continue
-        w = models.whole_body(r["frame"], [r["boxes"][ci]])[0]
+        w, v = models.whole_body(r["frame"], [r["boxes"][ci], r["boxes"][vi]])
+        if min(v[K[seg[0]], 2], v[K[seg[1]], 2]) < 0.3:
+            continue  # the struck segment is not located in this frame
         idx = [K[side + "kne"], K[side + "ank"], H26[side + "heel"], H26[side + "bt"], H26[side + "st"]]
         q = float(w[idx, 2].min())
         knee, ankle = w[K[side + "kne"], :2], w[K[side + "ank"], :2]
         heel, toe = w[H26[side + "heel"], :2], (w[H26[side + "bt"], :2] + w[H26[side + "st"], :2]) / 2
-        if np.linalg.norm((heel + toe) / 2 - np.asarray(target)) > 0.2 * body_height_px(w[:17], r["boxes"][ci]):
-            continue  # the foot is not at the contact point in this frame
+        mid = (heel + toe) / 2
+        d, sp = seg_dist(mid, v[K[seg[0]], :2], v[K[seg[1]], :2])
+        if d > 0.2 * body_height_px(w[:17], r["boxes"][ci]):
+            continue  # the foot is no longer (or not yet) on the struck segment
+        seen += 1
+        target = v[K[seg[0]], :2] + sp * (v[K[seg[1]], :2] - v[K[seg[0]], :2])
         ratio = float(np.linalg.norm(toe - heel)) / max(1.0, 0.6 * float(np.linalg.norm(ankle - knee)))  # boot ~0.6 shank
+        if q >= 0.3 and ratio >= 0.35:
+            usable.append(sole_facing(ankle, heel, toe, target))
         score = q * min(1.0, ratio / 0.7)
         if best is None or score > best[0]:
-            best = (score, q, ratio, ankle, heel, toe, r)
+            best = (score, q, ratio, ankle, heel, toe, target, r)
     if best is None or best[1] < 0.3:
-        return ind(label, None, 0, False, "Heel and toes of the contact foot are not visible at the contact point (occluded or not resolved).")
-    _, q, ratio, ankle, heel, toe, r = best
+        return ind(label, None, 0, False, "Heel and toes of the contact foot are not visible while it is on the opponent's leg "
+                                          f"({seen} in-contact frame(s) examined; occluded or not resolved).")
+    _, q, ratio, ankle, heel, toe, target, r = best
     if ratio < 0.35:
-        return ind(label, None, 0, False, f"In every frame around the contact the foot points along the camera's line of sight "
-                                          f"(heel-toe at most {ratio:.0%} of its expected length), so which way the sole faces "
-                                          "cannot be read from this one view.")
-    # the sole is judged against the opponent's body point that was struck, as seen in that frame
+        return ind(label, None, 0, False, f"In all {seen} in-contact frame(s) (-0.1 s to +0.3 s) the foot points along the camera's "
+                                          f"line of sight (heel-toe at most {ratio:.0%} of its expected length), so which way the "
+                                          "sole faces cannot be read from this view.")
     cosv = sole_facing(ankle, heel, toe, target)
-    conf = q * min(1.0, ratio / 0.7) * loc_q * (0.9 if abs(cosv - 0.6) > 0.2 else 0.6)
+    spread = f" Other usable in-contact frames: cos {min(usable):.2f} to {max(usable):.2f} ({len(usable)} frames)." if len(usable) > 1 else ""
+    agree = len(usable) < 2 or all((c >= 0.6) == (cosv >= 0.6) for c in usable)
+    conf = q * min(1.0, ratio / 0.7) * loc_q * (0.9 if abs(cosv - 0.6) > 0.2 else 0.6) * (1.0 if agree else 0.6)
     return ind(label, bool(cosv >= 0.6), conf,
                detail=(f"Sole normal (heel-toe line, Halpe26 foot keypoints at {r['t']:.2f} s, min score {q:.2f}, foot "
-                       f"{ratio:.0%} of its expected length) vs direction to the contact point: cos = {cosv:.2f} (>= 0.6 counts)."),
+                       f"{ratio:.0%} of its expected length) vs direction to the struck point in that frame: cos = {cosv:.2f} "
+                       f"(>= 0.6 counts).{spread}"),
                sole_cos=round(cosv, 2), heel=[round(float(v), 1) for v in heel], toe=[round(float(v), 1) for v in toe],
-               frame_t=round(r["t"], 3))
+               frame_t=round(r["t"], 3), in_contact_frames=seen, usable_frames=len(usable))
 
 
 def _fps(recs):
@@ -769,6 +782,23 @@ def _onset(posed):
     return closest
 
 
+def _onsets(posed, gap_s=0.3, limit=3):
+    """Onsets of separate contact episodes (runs of touching frames more than gap_s apart), earliest first,
+    at most `limit`; a long proximity span can hold a brush of arms and, later, the actual challenge.
+    Without any touching frame: [the closest approach]."""
+    out, last = [], None
+    for r in posed:
+        cs = [(j, nearest_contact(r["kps"][j], r["kps"][1 - j], body_height_px(r["kps"][1 - j], r["boxes"][1 - j]))) for j in (0, 1)]
+        cs = [(j, c) for j, c in cs if c and c["d"] <= TOUCH]
+        if not cs:
+            continue
+        if last is None or r["t"] - last > gap_s:
+            j, c = min(cs, key=lambda jc: jc[1]["d"])
+            out.append((r, j, c))
+        last = r["t"]
+    return out[:limit] or [_onset(posed)]
+
+
 def measure(cand, analysis, tracks, cap, fps, size, models, homs, debug_dir=None):
     shot = next(s for s in analysis["shots"] if s["id"] == cand["shot"])
     ta, tb = (tracks[(cand["shot"], tid)] for tid in cand["track_ids"])
@@ -779,27 +809,36 @@ def measure(cand, analysis, tracks, cap, fps, size, models, homs, debug_dir=None
     step = max(1, round(fps / COARSE_HZ))
     run_pose(recs[::step], models)
     both = lambda: [r for r in recs if r["kps"][0] is not None and r["kps"][1] is not None]
-    if both():
-        k = recs.index(_onset(both())[0])
+    for onset in _onsets(both()) if both() else []:
+        k = recs.index(onset[0])
         run_pose(recs[max(0, k - step):k + step + 1], models)
     posed = both()
-    notes = []
     base = {"shot": cand["shot"], "t_range": [round(t0, 3), round(t1, 3)], "frames_examined": len(recs),
             "frames_with_both_poses": len(posed), "frames_with_rtmpose_fallback": sum(bool(r.get("rtm")) for r in posed), "candidate": {k: cand[k] for k in ("t0", "t1", "hits", "calibrated")}}
     if not posed:
         base.update(t=round((cand["t0"] + cand["t1"]) / 2, 3), players=_players(cand, ta, tb, None), notes=[
             "Neither pose could be recovered for both players in the same frame (occlusion or too small)."],
             indicators=_unobservable("Pose not recovered for both players."), dogso=dogso_factors(None, None, size, None, None, (None, "", 0), None)[0])
-        return base
+        return [base]
 
     # contact frame + direction
-    best = _onset(posed)
-    if best[2] is None:
+    episodes = _onsets(posed)
+    if episodes[0][2] is None:
         base.update(t=round(posed[len(posed) // 2]["t"], 3), players=_players(cand, ta, tb, None),
                     notes=["Too few keypoints visible to measure contact."],
                     indicators=_unobservable("Too few keypoints visible."), dogso=dogso_factors(None, None, size, None, None, (None, "", 0), None)[0])
-        return base
-    rec, j, contact = best
+        return [base]
+    out = [_at_onset(cand, analysis, fps, size, models, debug_dir, recs, posed, ta, tb, base, e) for e in episodes]
+    if len(out) > 1:
+        for o in out:
+            o["notes"].append(f"One of {len(out)} separate contact episodes between these two players in this span.")
+    return out
+
+
+def _at_onset(cand, analysis, fps, size, models, debug_dir, recs, posed, ta, tb, base, onset):
+    """All indicators for one contact episode (its onset frame, striker index, contact)."""
+    rec, j, contact = onset
+    base, notes = dict(base), []
     # The same frame measured the other way round: symmetric foot-to-foot contact needs a tie-break.
     rev = nearest_contact(rec["kps"][1 - j], rec["kps"][j], body_height_px(rec["kps"][j], rec["boxes"][j]))
     t_c = rec["t"]
@@ -902,7 +941,7 @@ def measure(cand, analysis, tracks, cap, fps, size, models, homs, debug_dir=None
         indicators["studs_showing"] = ind("Studs / sole towards the opponent", None, 0, False,
                                           "Foot keypoint model not installed (run cv/setup.sh); COCO pose has no toes or heel.")
     else:
-        indicators["studs_showing"] = _studs(models, recs, ic, ci, side, contact["point"], size_q)
+        indicators["studs_showing"] = _studs(models, recs, ic, ci, side, contact["seg"], size_q)
 
     # both feet off the ground (lunge), in the 0.3 s up to the contact
     pre = [r for r in posed if t_c - 0.3 <= r["t"] <= t_c]
@@ -1195,21 +1234,29 @@ def _is_closeup(analysis, shot):
     return np.mean([len(f.get("players") or []) for f in fs]) < CLOSEUP_MAX_PLAYERS
 
 
-def _team_centres(analysis):
-    cols = [((analysis.get("teams") or {}).get(k) or {}).get("color") for k in "AB"]
-    if not all(isinstance(c, str) and len(c) == 7 for c in cols):
-        return None
-    bgr = np.array([[[int(c[5:7], 16), int(c[3:5], 16), int(c[1:3], 16)] for c in cols]], np.uint8)
-    return cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)[0].astype(np.float32)
+def torso_kit(frame, kps, box):
+    """teams.kit_feature on the shirt found by pose (shoulders to hips). Close-up boxes are cut by the frame
+    edge, so the fixed torso band of the box is often shorts or sky; this passes kit_feature a box whose
+    band is exactly the shirt."""
+    from . import teams
+    pts = [kps[K[n], :2] for n in ("lsho", "rsho", "lhip", "rhip") if kps is not None and kps[K[n], 2] >= KP_CONF]
+    if len(pts) < 3:
+        return teams.kit_feature(frame, box)
+    (left, top), (right, bottom) = np.min(pts, 0), np.max(pts, 0)
+    h, w = bottom - top, right - left
+    top, bottom, left, right = top + 0.1 * h, bottom - 0.2 * h, left + 0.15 * w, right - 0.15 * w
+    H, W = max(1.0, (bottom - top) / 0.35), max(1.0, (right - left) / 0.5)  # kit_feature crops [y1+.15H, y1+.5H] x [x1+.25W, x2-.25W]
+    y1, x1 = top - 0.15 * H, left - 0.25 * W
+    return teams.kit_feature(frame, (x1, y1, x1 + W, y1 + H))
 
 
 def closeup_analysis(analysis, shots, cap, fps, model, device, sample_hz=10):
     """Players for close-up shots found by the pose model's own person detector: tracked per shot
-    (track.assign_ids, fresh per shot), team = nearest window kit colour by track majority (ratio test;
-    ambiguous kits stay null). No positions: these shots are uncalibrated."""
+    (track.assign_ids, fresh per shot). Teams: 2-means on the close-up's own shirt colours (from the pose
+    torso), by track majority, with a ratio test so ambiguous kits (referee, keeper) stay null. Team letters
+    here are only used to tell opponents apart. No positions: these shots are uncalibrated."""
     from . import teams, track
-    centres = _team_centres(analysis)
-    frames = []
+    frames, per_shot = [], []
     for shot in shots:
         step = max(1, round(fps / sample_hz))
         f0, f1 = int(math.ceil(shot["start"] * fps)), int(math.floor(shot["end"] * fps))
@@ -1223,18 +1270,21 @@ def closeup_analysis(analysis, shots, cap, fps, model, device, sample_hz=10):
                 continue
             r = model.predict(frame, device=device, verbose=False, conf=0.4)[0]
             boxes = r.boxes.xyxy.cpu().numpy().astype(float) if len(r.boxes) else np.zeros((0, 4))
-            boxes = boxes[(boxes[:, 3] - boxes[:, 1]) >= CLOSEUP_MIN_PX]
-            feats = [teams.jersey_feature(frame, b) for b in boxes]
-            recs.append((i / fps, boxes, feats))
-        ids = track.assign_ids([(b, lambda q: q) for _, b, _ in recs])
+            kd = r.keypoints.data.cpu().numpy().astype(float) if r.keypoints is not None and len(r.boxes) else np.zeros((0, 17, 3))
+            # people on the pitch: tall enough, and feet below the top 30% of the frame (crowd above the ad boards)
+            keep = ((boxes[:, 3] - boxes[:, 1]) >= CLOSEUP_MIN_PX) & (boxes[:, 3] > 0.3 * frame.shape[0])
+            boxes, kd = boxes[keep], kd[keep]
+            recs.append((i / fps, boxes, [torso_kit(frame, k, b) for k, b in zip(kd, boxes)]))
+        per_shot.append((shot, recs, track.assign_ids([(b, lambda q: q) for _, b, _ in recs])))
+    model_t = teams.fit([f for _, recs, _ in per_shot for _, _, fs in recs for f in fs if f is not None])
+    for shot, recs, ids in per_shot:
         votes = {}
         for (_, _, feats), tids in zip(recs, ids):
             for f, tid in zip(feats, tids):
-                if f is None or centres is None:
+                if f is None or model_t is None:
                     continue
-                d = np.linalg.norm(centres - f, axis=1)
-                if d.min() < 0.7 * d.max():  # ratio test: clearly one kit
-                    votes.setdefault(int(tid), Counter())["AB"[int(d.argmin())]] += 1
+                if model_t.margin(f) > 0.3 and not model_t.odd(f):  # clearly one of the two kits
+                    votes.setdefault(int(tid), Counter())[model_t.predict(f)] += 1
         team = {tid: v.most_common(1)[0][0] for tid, v in votes.items()}
         ball = [f for f in analysis["frames"] if f["shot"] == shot["id"] and f.get("ball")]
         for (t, boxes, _), tids in zip(recs, ids):
@@ -1244,7 +1294,7 @@ def closeup_analysis(analysis, shots, cap, fps, model, device, sample_hz=10):
                            "players": [{"track_id": CLOSEUP_ID_BASE + int(tid), "team": team.get(int(tid)), "role": "player",
                                         "x": None, "y": None, "bbox": [round(float(v), 1) for v in box], "source": "closeup_pose"}
                                        for box, tid in zip(boxes, tids)]})
-    return {"shots": analysis["shots"], "frames": frames, "teams": analysis.get("teams")}
+    return {"shots": analysis["shots"], "frames": frames, "teams": None if model_t is None else {k: {"color": c} for k, c in model_t.colours().items()}}
 
 
 def run(args):
@@ -1288,12 +1338,12 @@ def run(args):
         for k, (src, c, tag) in enumerate(todo):
             progress(0.1 + 0.85 * k / len(todo), f"pose around candidate {k + 1}/{len(todo)} (t={c['t0']:.1f}s)")
             homs = Homographies(src, pitch_model, dev)
-            inc = measure(c, src, _tracks(src), cap, fps, size, models, homs, args.debug_dir)
-            inc["source"] = tag
-            if tag == "closeup_pose":
-                inc["notes"].insert(0, "Close-up shot: players found by the pose model because the wide-view detector tracked none; "
-                                       "track ids are separate from the analysis' ids and teams come from kit colour.")
-            result["incidents"].append(inc)
+            for inc in measure(c, src, _tracks(src), cap, fps, size, models, homs, args.debug_dir):
+                inc["source"] = tag
+                if tag == "closeup_pose":
+                    inc["notes"].insert(0, "Close-up shot: players found by the pose model because the wide-view detector tracked none; "
+                                           "track ids are separate from the analysis' ids and teams come from kit colour.")
+                result["incidents"].append(inc)
         cap.release()
         result["pipeline"].update(device=dev, fps=round(fps, 3), foot_model_loaded=models.foot is not None,
                                   ball_model_loaded=models.ball is not None)

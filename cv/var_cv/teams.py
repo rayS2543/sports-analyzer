@@ -23,35 +23,89 @@ def jersey_feature(frame, bbox):
     return np.median(keep, axis=0) if len(keep) >= MIN_PIXELS else None
 
 
-class TeamModel:
-    """Two kit colours. Labels are arbitrary but deterministic: A is the lighter kit."""
+N_HUES = 12
 
-    def __init__(self, features):
-        X = np.asarray(features, np.float32)
-        km = KMeans(n_clusters=2, n_init=10, random_state=0).fit(X)
-        order = np.argsort(-km.cluster_centers_[:, 0])  # by lightness
-        self.centres = km.cluster_centers_[order]
-        d = np.linalg.norm(X[:, None] - self.centres[None], axis=2).min(1)
-        self.radius = max(float(np.median(d)), 4.0)  # typical within-kit colour spread
+
+def _torso(frame, bbox):
+    """Upper-torso pixels (HSV and BGR) with grass removed, or None if too few."""
+    x1, y1, x2, y2 = bbox
+    w, h = x2 - x1, y2 - y1
+    crop = frame[int(y1 + 0.15 * h):int(y1 + 0.5 * h), int(x1 + 0.25 * w):int(x2 - 0.25 * w)]
+    if crop.size == 0:
+        return None
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV).reshape(-1, 3).astype(np.int32)
+    bgr = crop.reshape(-1, 3)
+    keep = ~((hsv[:, 0] >= 35) & (hsv[:, 0] <= 85) & (hsv[:, 1] > 50))  # grass
+    if keep.sum() < MIN_PIXELS:
+        return None
+    return hsv[keep], bgr[keep]
+
+
+def kit_feature(frame, bbox):
+    """Colour signature of a kit: histogram over 12 saturated hues + light/dark neutrals, square-rooted
+    (Hellinger), from the grass-free upper torso. Striped or two-tone shirts keep their mix instead of
+    averaging to a muddy colour, and shading changes the value, not the bin. Returns (signature,
+    display BGR: median of the saturated pixels when they cover >= 30% of the torso, else of all)
+    or None."""
+    t = _torso(frame, bbox)
+    if t is None:
+        return None
+    hsv, bgr = t
+    chroma = (hsv[:, 1] > 60) & (hsv[:, 2] > 50)
+    hist = np.zeros(N_HUES + 2)
+    np.add.at(hist, (hsv[chroma, 0] * N_HUES // 180), 1)
+    v = hsv[~chroma, 2]
+    hist[N_HUES] = (v >= 60).sum()  # white/grey: one bin, so a shadowed white shirt stays "white"
+    hist[N_HUES + 1] = (v < 60).sum()  # black
+    # display colour: the kit's main colour, not the average of its stripes
+    main = bgr[chroma] if chroma.mean() >= 0.3 else bgr
+    return np.sqrt(hist / hist.sum()), np.median(main, axis=0)
+
+
+class TeamModel:
+    """Two kits as colour signatures. Labels are deterministic: A is the lighter kit."""
+
+    def __init__(self, centres, radius, colours):
+        self.centres, self.radius, self.colours_bgr = np.asarray(centres, float), float(radius), np.asarray(colours, float)
+
+    @classmethod
+    def fit(cls, features, weights=None):
+        """features: [(signature, median BGR)]; weights: detection quality per crop."""
+        X = np.array([f[0] for f in features])
+        C = np.array([f[1] for f in features], float)
+        km = KMeans(n_clusters=2, n_init=10, random_state=0).fit(X, sample_weight=weights)
+        cols = np.array([np.median(C[km.labels_ == k], axis=0) for k in range(2)])
+        light = cv2.cvtColor(cols.reshape(1, 2, 3).astype(np.uint8), cv2.COLOR_BGR2LAB)[0, :, 0]
+        order = np.argsort(-light.astype(int))
+        d = np.linalg.norm(X[:, None] - km.cluster_centers_[None], axis=2).min(1)
+        return cls(km.cluster_centers_[order], max(float(np.median(d)), 0.05), cols[order])
 
     def predict(self, feature):
-        return "AB"[int(np.argmin(np.linalg.norm(self.centres - feature, axis=1)))]
+        return "AB"[int(np.argmin(np.linalg.norm(self.centres - feature[0], axis=1)))]
+
+    def margin(self, feature):
+        """How clearly a crop belongs to one kit: 1 - nearest/second distance (0 = ambiguous)."""
+        d = np.sort(np.linalg.norm(self.centres - feature[0], axis=1))
+        return float(1 - d[0] / max(d[1], 1e-9))
 
     def odd(self, feature):
-        """True when the colour is far from both kits (goalkeeper or referee kit)."""
-        return float(np.linalg.norm(self.centres - feature, axis=1).min()) > ODD_KIT * self.radius
+        """True when the kit is far from both teams (goalkeeper or referee kit)."""
+        return float(np.linalg.norm(self.centres - feature[0], axis=1).min()) > ODD_KIT * self.radius
 
     def colours(self):
-        out = {}
-        for name, lab in zip("AB", self.centres):
-            b, g, r = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8).reshape(1, 1, 3), cv2.COLOR_LAB2BGR)[0, 0]
-            out[name] = f"#{r:02x}{g:02x}{b:02x}"
-        return out
+        return {name: "#{2:02x}{1:02x}{0:02x}".format(*(int(v) for v in bgr)) for name, bgr in zip("AB", self.colours_bgr)}
+
+    def to_json(self):
+        return {"centres": self.centres.tolist(), "radius": self.radius, "colours_bgr": self.colours_bgr.tolist()}
+
+    @classmethod
+    def from_json(cls, d):
+        return cls(d["centres"], d["radius"], d["colours_bgr"])
 
 
-def fit(features):
-    """TeamModel, or None when there are too few jersey crops to cluster."""
-    return TeamModel(features) if len(features) >= 6 else None
+def fit(features, weights=None):
+    """TeamModel, or None when there are too few kit crops to cluster."""
+    return TeamModel.fit(features, weights) if len(features) >= 6 else None
 
 
 def cap_per_frame(players, min_sep_m=0.5):
