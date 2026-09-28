@@ -45,9 +45,14 @@ export function SiteHeader({ back = false }) {
           </h1>
         )}
         {!back && (
-          <Link to="/feed" className="pressable inline-flex items-center gap-1.5 text-sm font-medium text-muted hover:text-fg">
-            <span aria-hidden="true">★</span> For You
-          </Link>
+          <nav aria-label="Main" className="flex items-center gap-5">
+            <Link to="/var" className="pressable text-sm font-medium text-muted hover:text-fg">
+              VAR
+            </Link>
+            <Link to="/feed" className="pressable inline-flex items-center gap-1.5 text-sm font-medium text-muted hover:text-fg">
+              <span aria-hidden="true">★</span> For You
+            </Link>
+          </nav>
         )}
       </div>
     </header>

@@ -52,7 +52,7 @@ describe("MatchesTable", () => {
     renderMatchesTable();
 
     await waitFor(() =>
-      expect(fetch).toHaveBeenCalledWith("http://127.0.0.1:5000/matches?league=PD")
+      expect(fetch).toHaveBeenCalledWith("http://127.0.0.1:5001/matches?league=PD")
     );
   });
 

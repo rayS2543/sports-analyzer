@@ -23,3 +23,8 @@ frontend/coverage/
 
 *.log
 .DS_Store
+
+# Virtual VAR: CV env, model weights, downloaded clips/analyses
+cv/.venv/
+cv/weights/
+var_data/
