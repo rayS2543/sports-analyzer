@@ -136,6 +136,7 @@ export default function MatchDetailPage() {
           {LEAGUE_NAMES[league] || league}
           {date && <> &middot; {formatDay(date)}</>}
         </p>
+
         <div className="grid grid-cols-[1fr_auto_1fr] items-start gap-4 sm:gap-10 w-full max-w-2xl">
           <div className="flex flex-col items-center gap-3 min-w-0">
             <TeamBadge name={home} crest={detail?.home?.crest} size="xl" />
@@ -147,6 +148,15 @@ export default function MatchDetailPage() {
             <h2 className="text-lg sm:text-2xl font-semibold tracking-tight">{away}</h2>
           </div>
         </div>
+        {LEAGUE_NAMES[league] && date && (
+          // ESPN fixture IDs aren't matched to ours, so the link opens that day's fixtures rather than guessing the match.
+          <Link
+            to={`/var?${new URLSearchParams({ league, date })}`}
+            className="pressable inline-flex items-center gap-2 h-9 px-4 rounded-full border border-line text-sm font-medium text-muted hover:text-fg hover:border-faint"
+          >
+            Review in VAR <span aria-hidden="true">→</span>
+          </Link>
+        )}
       </section>
 
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.5fr)] gap-8 lg:gap-10 items-start">

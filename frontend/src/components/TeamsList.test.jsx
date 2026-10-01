@@ -23,7 +23,7 @@ describe("TeamsList", () => {
 
     render(<TeamsList league="PD" />, { wrapper: MemoryRouter });
 
-    expect(fetch).toHaveBeenCalledWith("http://127.0.0.1:5000/teams?league=PD");
+    expect(fetch).toHaveBeenCalledWith("http://127.0.0.1:5001/teams?league=PD");
   });
 
   it("renders a card per team", async () => {
@@ -49,6 +49,6 @@ describe("TeamsList", () => {
     const { rerender } = render(<TeamsList league="PD" />, { wrapper: MemoryRouter });
     rerender(<TeamsList league="PL" />);
 
-    expect(fetch).toHaveBeenCalledWith("http://127.0.0.1:5000/teams?league=PL");
+    expect(fetch).toHaveBeenCalledWith("http://127.0.0.1:5001/teams?league=PL");
   });
 });

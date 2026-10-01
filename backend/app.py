@@ -9,6 +9,9 @@ from routes.matches_detail import matches_detail_bp
 from routes.news import news_bp
 from routes.players import players_bp
 from routes.predictions import predictions_bp
+from routes.var_analysis import var_analysis_bp
+from routes.var_clips import var_clips_bp
+from routes.var_fouls import var_fouls_bp
 
 load_dotenv()
 
@@ -34,6 +37,9 @@ def create_app():
     app.register_blueprint(players_bp)
     app.register_blueprint(news_bp)
     app.register_blueprint(analytics_bp)
+    app.register_blueprint(var_clips_bp)
+    app.register_blueprint(var_analysis_bp)
+    app.register_blueprint(var_fouls_bp)
 
     return app
 
@@ -41,4 +47,4 @@ def create_app():
 app = create_app()
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, port=5001)  # 5000 is taken by macOS AirPlay Receiver

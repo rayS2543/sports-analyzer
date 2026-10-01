@@ -1,0 +1,15 @@
+# CV pipeline env (separate from the Flask backend). Tested on Python 3.14, Apple M2 (MPS).
+torch>=2.9
+torchvision>=0.24
+ultralytics>=8.3,<9
+supervision>=0.25,<1
+opencv-python-headless>=4.10
+numpy>=2.0
+scipy>=1.13
+scikit-learn>=1.5
+gdown>=5.2
+pytest>=8
+# Foul review foot keypoints (RTMPose Halpe26 via rtmlib). rtmlib itself is installed by setup.sh with
+# --no-deps: its metadata pulls opencv-python + opencv-contrib-python, which would clash with the headless build.
+onnxruntime>=1.20
+tqdm>=4.66
