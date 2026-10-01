@@ -63,23 +63,29 @@ Per-window calibration (`var_data`, calibrated / sampled at 10 fps):
 | 46338651 38.5-44.5 | 60/60 | lofted pass: ball peaks 4.6 ± 0.45 m |
 | 46338651 61.0-66.0 | 51/51 | 2 pass events |
 | 46338651 62.0-70.0 | 67/81 | live cut at 66.4 s (ID carry-over test) |
-| 44656413 1.0-7.0 | 48/61 | red card, far live camera (was 0) |
-| 44656413 12.0-18.0 | 55/60 | aftermath (was 0) |
-| 44656413 23.0-28.0 | **0/42** | close-up replay of Mbappé's contact (t≈23.22) |
-| 44656413 27.0-31.0 | **0/30** | second replay |
-| 46064061 1.0-7.0 | **0/61** | Gayà red card (Osasuna–Valencia, esp.1 748159) |
+| 44656413 1.0-7.0 | 56/61 | red card, far live camera (was 0, then 48) |
+| 44656413 12.0-18.0 | 56/60 | aftermath (was 0, then 55) |
+| 44656413 23.0-28.0 | 0/42 | close-up replay of Mbappé's contact (t≈23.22): no fixable line geometry |
+| 44656413 27.0-31.0 | 0/30 | second (side-on) replay: same |
+| 46064061 1.0-7.0 | 57/61 | Gayà red card (Osasuna–Valencia, esp.1 748159) (was 0) |
 
 Latest CV work (in the handoff commit): wide-shot calibration for 44656413, robust team model (Madrid white now its own cluster `#dadae5`), and in `fouls.py` RTMPose toes/heels, ball detection at contact, measured localisation error and a working cv2 thread cap.
 
-Foul review on Mbappé (t=23.223): correct contact found (right foot → Blanco's shin). All grounds **inconclusive**: studs not observable (boot points along the camera axis at contact), straight-leg/lunge below the 60% reliance line, ball playability 0.30, no calibration → no speed/DOGSO. No false reds on any negative window.
+Foul review on Mbappé: see "Done since the last handoff" below. No false reds on any negative window.
 
-## Open work — priority order (each is a bug, not a caveat)
+## Done since the last handoff (2026-09-28 evening)
 
-1. **Close-up/replay calibration** (44656413 23.0-28.0 and 27.0-31.0; 46064061 1.0-7.0). Metres, speed and DOGSO are unobservable exactly where fouls are best seen. Ideas: line-only calibration with priors on focal/camera height; pooling keypoints across the shot; fitting the goal frame (7.32 × 2.44 m) or box edges. Propagating from a live frame across a cut is *not* valid.
-2. **Re-run fouls** on 44656413 1.0-7.0 / 12.0-18.0 (now calibrated) and on the replays once (1) lands; report per-ground verdicts vs the official red (kept separate).
-3. **Studs/sole on Mbappé:** try frames just after contact (boot rotates into view) and any other replay angle in the 65 s clip.
-4. **Identity across cuts:** only 2/~18 people kept their ID over the 66.4 s cut in 46338651 62.0-70.0. Suppress duplicate boxes (cross-class NMS + merge near-coincident tracks), then re-measure.
-5. **ball3d:** bounces < ~1 m after a landing read as rolling; drag ignored for hard-hit balls.
-6. **Final end-to-end browser pass** on both deep links (desktop + mobile), then open the PR.
+1. **Calibration:** grass mask V floor 20 (stadium shadow); position-uncertainty gate is the 90th percentile over the visible grass (the max rejected good frames on mask-corner samples). Gayà 46064061 1.0-7.0: 0 → 57/61. The Mbappé replays (23.0-28.0, 27.0-31.0) remain 0: only parallel lines or an arc sliver are visible, which cannot fix a homography; metric evidence comes from the live window.
+2. **Fouls:** live contact at 3.27 (contact 0.57, knee 171°, 8.2 m/s); replay 1 contact at 23.223 is Mbappé (A) on Blanco (B); close-up teams read from the posed bodies' shirts when the tracks swap. **Combine angles:** `POST /var/fouls/<clip>/combine` + "Same incident from another angle" in the UI; each indicator from the angle that saw it best, contradictions never relied on and listed.
+3. **Studs:** leg contacts are their own episodes (arm touches in a close-up swallowed the kick). Replay 2 (side-on, 29.296) now finds the challenge: sole towards the shin (cos 1.00) but only 0.28 confidence (frames disagree); replay 1 reads sole away (0.34). Live + both replays combined: **inconclusive** on every ground.
+4. **Identity:** 46338651 62.0-70.0 now 5 carried over the 66.4 s cut (was 2). The other ~14 are genuinely ambiguous (same kit, within a few metres after a 1.5 s unseen gap) and get fresh ids; removing the shots' common calibration offset (1.75 m) did not change that.
+5. **ball3d:** quadratic drag for flights > 15 m/s (kept when the fit improves); a landing is a free segment break, so a 0.6 m hop is a flight, not rolling.
+6. **Arm to the head** gets contact's depth check (tracked > 2 m apart = no touch; uncalibrated = x0.85, "depth not verified"). The Mbappé replay's elbow-over-head was a 2D overlap (Blanco behind him): 0.60 → 0.51, no longer relied on.
+7. **One contact via two tracks** (one body tracked twice in a close-up) is reported once (`fouls.dedupe`).
+8. **Browser pass (2026-10-01):** both deep links on desktop and at 390 px (no horizontal overflow). Combine angles works in the UI (Mbappé live + replays: inconclusive on every ground).
+
+## Open work
+
+1. Open the PR.
 
 Performance: a 5 s window takes ~40–90 s on the Air when it is the only job; foul review 20 s – 6 min per window.

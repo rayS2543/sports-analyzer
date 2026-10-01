@@ -114,10 +114,11 @@ def test_lofted_pass_height_and_landing():
     fixed = np.array([[b["x"], b["y"]] for b in balls])
     assert np.linalg.norm(naive - true_xy, axis=1)[flight].max() > 10
     assert np.linalg.norm(fixed - true_xy, axis=1)[flight].max() < 2.0
-    # 0.6 m hop after the landing: at 0.2 m calibration jitter it may be read as rolling, but then the
-    # reported uncertainty must cover it (honest, not silently wrong)
+    # 0.6 m hop after the landing: the landing is a free breakpoint, so the hop is its own flight
     unc = np.array([b["height_uncertainty_m"] for b in balls], float)
     bounce = (t > 3.25) & (t < 3.85)
+    assert all(b["airborne"] for b, bo in zip(balls, bounce) if bo)
+    assert np.abs(z - true_h)[bounce].max() < 0.3
     assert (np.abs(z - true_h)[bounce] <= 2.5 * unc[bounce]).all()
     assert (np.abs(z - true_h)[flight] <= 2.5 * unc[flight]).all()
     # the false detection gets no height and keeps its naive position (as its own run or a trajectory outlier)
@@ -153,3 +154,30 @@ def test_uncalibrated_frames_untouched_and_idempotent():
     once = copy.deepcopy(an)
     ball3d.apply(an)
     assert an == once
+
+
+def driven_shot(v0=(28.0, -4.0, 7.0), dt=0.1, T=1.3, k=ball3d.DRAG_K):
+    """A hard, low drive with real quadratic drag (integrated at 1 ms), then the ball is off camera."""
+    p, v, out, s = np.array([20.0, 40.0, 0.0]), np.array(v0), [], 0.0
+    for step in range(int(T / 0.001) + 1):
+        if step % int(dt / 0.001) == 0:
+            out.append((round(s, 3), (float(p[0]), float(p[1]), max(float(p[2]), 0.0))))
+        a = -k * np.linalg.norm(v) * v - [0, 0, ball3d.G]
+        v, p, s = v + a * 0.001, p + v * 0.001, s + 0.001
+    return out
+
+
+def test_hard_shot_is_fitted_with_air_drag(monkeypatch):
+    traj = driven_shot()
+    true = np.array([p for _, p in traj])
+
+    def fitted():
+        an = make_analysis(traj, np.random.default_rng(4), players={0: [(20.0, 40.6)], 1: [(20.0, 40.6)]})
+        ball3d.apply(an)
+        return np.array([[f["ball"]["x"], f["ball"]["y"], f["ball"]["z"] if f["ball"]["z"] is not None else np.nan]
+                         for f in an["frames"]])
+
+    with_drag = np.nanmax(np.linalg.norm(fitted() - true, axis=1)[2:])
+    monkeypatch.setattr(ball3d, "DRAG_K", 0.0)
+    without = np.nanmax(np.linalg.norm(fitted() - true, axis=1)[2:])
+    assert with_drag < 1.0 and with_drag < without, (with_drag, without)

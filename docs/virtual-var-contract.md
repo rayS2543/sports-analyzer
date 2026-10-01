@@ -14,6 +14,13 @@ Read `handoff.md` at the repo root first: it states the product intent, current 
 - "inconclusive" is a first-class verdict. Uncertainty is always reported.
 - Player bodies in 3D are ASSUMED geometry (ground-plane position only); UI must say so.
 
+Calibration acceptance requires both painted-line agreement and finite position uncertainty
+across the visible grass. The 90th percentile of the sampled 1-sigma position uncertainty must be at
+most 1 m, and any unobservable (infinite) sample rejects the frame;
+rank-deficient line fits are rejected. A small line residual alone cannot establish metric
+positions in a close-up. `pipeline.calibration_thresholds.max_position_uncertainty_m` records
+this gate; rejected frames retain null pitch coordinates and null homography.
+
 ## Layout
 ```
 cv/                          # separate Python env for CV (torch/ultralytics/opencv). NOT imported by Flask.

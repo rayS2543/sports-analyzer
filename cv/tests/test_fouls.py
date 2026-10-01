@@ -104,6 +104,48 @@ def test_contact_frame_is_the_onset_not_the_later_tangle():
     assert r["t"] == 1.0 and c["d"] > fouls.TOUCH
 
 
+def test_foot_strike_inside_a_continuous_arm_contact_is_its_own_episode():
+    victim = standing(500)
+    jostle = standing(560)
+    jostle[fouls.K["lwri"], :2] = (521, 280)  # hand on the victim's arm, every frame
+    kick = jostle.copy()
+    kick[fouls.K["rank"], :2] = (514, 370)  # then the foot into the shin, arm still touching
+    rec = lambda t, c: {"t": t, "kps": [c, victim], "boxes": [[0, 220, 1, 400], [0, 220, 1, 400]]}
+    posed = [rec(1.0 + 0.1 * k, jostle) for k in range(3)] + [rec(1.3 + 0.1 * k, kick) for k in range(3)]
+    eps = fouls._onsets(posed)
+    assert [(r["t"], c["striker"]) for r, _, c in eps] == [(1.0, "lwri"), (1.3, "rank")]
+
+
+def test_elbow_over_the_head_in_the_image_needs_depth():
+    victim = standing(500)
+    chal = standing(560)
+    chal[fouls.K["relb"], :2] = victim[fouls.K["nose"], :2]
+    posed = [{"t": 1.0, "kps": [chal, victim], "boxes": [[0, 220, 1, 400], [0, 220, 1, 400]]}]
+    ball = {"observable": False, "value": None}
+    near = fouls._arm_strike(posed, 0, 1, ball, ground_m=0.5)
+    flat = fouls._arm_strike(posed, 0, 1, ball, ground_m=None)
+    far = fouls._arm_strike(posed, 0, 1, ball, ground_m=4.0)
+    assert near["value"] and flat["value"] and flat["confidence"] < near["confidence"]
+    assert far["value"] is False and "depth illusion" in far["detail"]
+
+
+def test_one_contact_found_through_two_tracks_is_reported_once():
+    def inc(t, chal, victim, conf, part="right foot"):
+        return {"t": t, "notes": [], "players": {"challenger": {"track_id": chal}, "victim": {"track_id": victim}},
+                "indicators": {"contact": {"confidence": conf, "striking_part": part, "body_part": "shin"}}}
+    out = fouls.dedupe([inc(2.0, 7, 5, 0.48), inc(1.0, 1, 2, 0.7), inc(2.0, 2, 5, 0.47), inc(2.0, 2, 5, 0.5, "right hand")])
+    assert [(i["t"], i["players"]["challenger"]["track_id"]) for i in out] == [(1.0, 1), (2.0, 7), (2.0, 2)]
+    assert "via track 2" in out[1]["notes"][0]
+
+
+def test_one_body_posed_twice_is_the_same_person_even_if_the_legs_split():
+    a, b = standing(500), standing(501)
+    for j in ("lkne", "rkne", "lank", "rank"):
+        b[fouls.K[j], 0] += 60  # second estimate puts both legs elsewhere
+    assert fouls._same_person(a, b)
+    assert not fouls._same_person(standing(500), standing(530))
+
+
 def test_lunge_needs_two_frames_and_rejects_impossible_heights():
     victim = standing(500)
     def jump(lift_px):

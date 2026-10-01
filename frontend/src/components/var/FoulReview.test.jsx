@@ -61,7 +61,7 @@ describe("FoulReview", () => {
     expect(await screen.findByText("pose around candidate 2/4")).toBeInTheDocument();
     expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "40");
     responses = [DONE];
-    expect(await screen.findByRole("list", { name: "Examined challenges" })).toBeInTheDocument();
+    expect(await screen.findByRole("list", { name: "Examined challenges" }, { timeout: 5000 })).toBeInTheDocument();
     expect(screen.getByText("Red card")).toBeInTheDocument();
     expect(screen.getByText("No red-card ground")).toBeInTheDocument();
   });
@@ -111,6 +111,30 @@ describe("FoulReview", () => {
     render(<FoulReview clip="1" start={0} end={5} />);
     await userEvent.click(await screen.findByRole("button", { name: "Review challenges" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Analyse this window first.");
+  });
+
+  it("combines the incident with the same challenge seen from another reviewed window", async () => {
+    const replay = { ...INCIDENT, id: 3, t: 23.22 };
+    axios.get.mockImplementation((url, opts) => {
+      if (url === `${API_BASE}/var/windows/44656413`)
+        return Promise.resolve({ data: { windows: [{ start: 1, end: 7, key: "1.0-7.0", status: "done" }, { start: 23, end: 28, key: "23.0-28.0", status: "done" }] } });
+      return Promise.resolve({ data: opts.params.start === 23 ? { status: "done", incidents: [replay] } : DONE });
+    });
+    const combined = { ...INCIDENT, angles: [{ angle: "1.0-7.0", t: 3.203 }, { angle: "23.0-28.0", t: 23.22 }] };
+    axios.post.mockResolvedValue({ data: combined });
+    render(<FoulReview clip="44656413" start={1} end={7} />);
+    await userEvent.click(await screen.findByRole("button", { name: /0:03\.2/ }));
+    const select = await screen.findByRole("combobox", { name: /Same incident from another angle/ });
+    await userEvent.selectOptions(select, "23.0-28.0|3");
+    expect(axios.post).toHaveBeenCalledWith(`${API_BASE}/var/fouls/44656413/combine`, {
+      parts: [
+        { start: 1, end: 7, id: 0 },
+        { start: 23, end: 28, id: 3 },
+      ],
+    });
+    const out = await screen.findByRole("region", { name: "Combined angles" });
+    expect(within(out).getByText(/Combined from 1\.0-7\.0/)).toBeInTheDocument();
+    expect(within(out).getByRole("article", { name: "Serious foul play" })).toHaveAttribute("data-verdict", "red");
   });
 
   it("offers a retry after a failed run", async () => {

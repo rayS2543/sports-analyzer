@@ -123,11 +123,88 @@ function SanctionBadge({ sanction }) {
   );
 }
 
-function Incident({ inc, open, active, onSelect }) {
-  const id = `foul-${inc.id}`;
-  const players = inc.players?.challenger
+function playersOf(inc) {
+  return inc.players?.challenger
     ? `${who(inc.players.challenger)} on ${who(inc.players.victim)}`
     : (inc.players?.involved || []).map(who).join(" and ");
+}
+
+/** Same incident from another reviewed window (e.g. a close-up replay): each piece of evidence is
+ * taken from the angle that saw it best; the backend refuses contradictory or opposite-kit pairs. */
+function CombineAngles({ clip, start, end, inc, others }) {
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const options = others.flatMap((w) => w.incidents.map((o) => ({ w, o, value: `${w.key}|${o.id}` })));
+  if (!options.length) return null;
+
+  const pick = async (value) => {
+    setResult(null);
+    setError(null);
+    const choice = options.find((opt) => opt.value === value);
+    if (!choice) return;
+    setBusy(true);
+    try {
+      const res = await axios.post(`${API_BASE}/var/fouls/${clip}/combine`, {
+        parts: [
+          { start, end, id: inc.id },
+          { start: choice.w.start, end: choice.w.end, id: choice.o.id },
+        ],
+      });
+      setResult(res.data);
+    } catch (err) {
+      setError(apiError(err, "Could not combine the angles."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const id = `foul-${inc.id}-combined`;
+  return (
+    <div className="border-t border-line pt-3 flex flex-col gap-3">
+      <label className="flex flex-wrap items-center gap-2 text-sm text-muted">
+        Same incident from another angle
+        <select
+          defaultValue=""
+          disabled={busy}
+          onChange={(e) => pick(e.target.value)}
+          className="min-w-0 max-w-full rounded-lg border border-line bg-surface px-2 h-9 text-sm text-fg"
+        >
+          <option value="">Choose a reviewed challenge…</option>
+          {options.map(({ w, o, value }) => (
+            <option key={value} value={value}>
+              {formatClock(w.start)}–{formatClock(w.end)} · {formatClock(o.t)} · {playersOf(o) || "players not identified"}
+            </option>
+          ))}
+        </select>
+      </label>
+      {error && (
+        <p role="alert" className="text-sm text-loss">
+          {error}
+        </p>
+      )}
+      {result && (
+        <section aria-label="Combined angles" className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-baseline gap-3">
+            <SanctionBadge sanction={result.sanction} />
+            <span className="text-xs text-faint">
+              Combined from {result.angles.map((a) => `${a.angle} at ${formatClock(a.t)}`).join(" and ")}
+            </span>
+          </div>
+          <div className="grid gap-3 grid-cols-[repeat(auto-fit,minmax(14rem,1fr))]">
+            {result.grounds.map((g) => (
+              <GroundCard key={g.ground} ground={g} id={id} />
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function Incident({ inc, open, active, onSelect, combine }) {
+  const id = `foul-${inc.id}`;
+  const players = playersOf(inc);
   return (
     <li className={`rounded-xl border ${active ? "border-accent/60" : "border-line"} bg-canvas/40`}>
       <button
@@ -144,7 +221,7 @@ function Incident({ inc, open, active, onSelect }) {
       {open && (
         <div id={`${id}-body`} className="px-4 pb-4 flex flex-col gap-3">
           <p className="text-sm text-muted">{inc.sanction_note}</p>
-          <div className="grid gap-3 lg:grid-cols-3">
+          <div className="grid gap-3 grid-cols-[repeat(auto-fit,minmax(14rem,1fr))]">
             {inc.grounds.map((g) => (
               <GroundCard key={g.ground} ground={g} id={id} />
             ))}
@@ -156,6 +233,7 @@ function Incident({ inc, open, active, onSelect }) {
               ))}
             </ul>
           )}
+          {combine && <CombineAngles inc={inc} {...combine} />}
         </div>
       )}
     </li>
@@ -187,6 +265,34 @@ export default function FoulReview({ clip, start, end, time, onSeek, pollMs = 15
     setOpenId(null);
     load();
   }, [load]);
+
+  // Other windows of this clip whose foul review is done: candidate angles of the same incident.
+  const [others, setOthers] = useState([]);
+  const done = data?.status === "done";
+  useEffect(() => {
+    if (!done) return undefined;
+    let alive = true;
+    (async () => {
+      try {
+        const res = await axios.get(`${API_BASE}/var/windows/${clip}`);
+        const wins = (res.data?.windows || []).filter((w) => w.status === "done" && !(w.start === start && w.end === end));
+        const reviews = await Promise.all(
+          wins.map((w) =>
+            axios
+              .get(`${API_BASE}/var/fouls/${clip}`, { params: { start: w.start, end: w.end } })
+              .then((r) => (r.data?.status === "done" && r.data.incidents?.length ? { ...w, incidents: r.data.incidents } : null))
+              .catch(() => null),
+          ),
+        );
+        if (alive) setOthers(reviews.filter(Boolean));
+      } catch {
+        if (alive) setOthers([]);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [done, clip, start, end]);
 
   const running = data?.status === "running" || data?.status === "queued";
   useEffect(() => {
@@ -289,6 +395,7 @@ export default function FoulReview({ clip, start, end, time, onSeek, pollMs = 15
                   open={openId === inc.id}
                   active={Number.isFinite(time) && Math.abs(time - inc.t) < 0.15}
                   onSelect={() => select(inc)}
+                  combine={others.length ? { clip, start, end, others } : null}
                 />
               ))}
             </ol>

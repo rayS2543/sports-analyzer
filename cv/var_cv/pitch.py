@@ -140,11 +140,14 @@ def line_mask(frame):
     g = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     top = cv2.morphologyEx(g, cv2.MORPH_TOPHAT, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)))
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    green = cv2.inRange(hsv, (35, 50, 40), (85, 255, 255))
+    green = cv2.inRange(hsv, (35, 50, 20), (85, 255, 255))  # low V floor: grass in stadium shadow
     region = cv2.morphologyEx(green, cv2.MORPH_CLOSE, np.ones((15, 15), np.uint8))  # fill lines/players
     region = cv2.morphologyEx(region, cv2.MORPH_OPEN, np.ones((41, 41), np.uint8))  # drop specks in crowd/ads
     region = cv2.dilate(region, np.ones((7, 7), np.uint8))
-    return ((top > 25) & (region > 0)).astype(np.uint8) * 255, region
+    # White paint in stadium shadow can be darker than sunlit grass. Require
+    # local contrast, with a noise floor, rather than losing every shadowed line.
+    contrast = np.clip(0.15 * g, 8, 25)
+    return ((top > contrast) & (region > 0)).astype(np.uint8) * 255, region
 
 
 def _skeleton(mask):
@@ -200,7 +203,8 @@ def m_per_px(H, pts, e=0.5):
 
 
 CORR_PX = 40  # correlation length of line-fit residuals along a painted line (px)
-FAIL = {"H": None, "support": 0.0, "worst": 0.0, "error_m": float("inf"), "sigma": None}
+FAIL = {"H": None, "support": 0.0, "worst": 0.0, "error_m": float("inf"),
+        "uncertainty_m": float("inf"), "sigma": None}
 
 
 def refine(H, masks, kp_img, kp_pitch, kp_weight=0.2, stages=((50.0, 10.0), (20.0, 3.0))):
@@ -291,7 +295,12 @@ def refine(H, masks, kp_img, kp_pitch, kp_weight=0.2, stages=((50.0, 10.0), (20.
     seg = np.linalg.norm(np.diff(q, axis=0), axis=1)
     length = float(seg[seg < 10].sum())  # image length of matched lines (ignore jumps between lines)
     inflate = max(1.0, len(q) / max(length / CORR_PX, 1.0))
-    cov = inflate * s2 * np.linalg.pinv(J.T @ J)
+    # A pseudoinverse assigns zero variance to unobserved directions. A line-only
+    # close-up must not gain certainty just because its homography is underdetermined.
+    _, singular, vt = np.linalg.svd(J, full_matrices=False)
+    if singular[-1] <= singular[0] * 1e-6:
+        return dict(FAIL, H=Hr, support=float(hit.mean()), worst=worst, error_m=err)
+    cov = inflate * s2 * (vt.T / singular**2) @ vt
     Hs = [np.linalg.inv(G_of(x + 0.5 * e)) for e in np.eye(8)] + [np.linalg.inv(G_of(x - 0.5 * e)) for e in np.eye(8)]
 
     def sigma(points):
@@ -301,7 +310,9 @@ def refine(H, masks, kp_img, kp_pitch, kp_weight=0.2, stages=((50.0, 10.0), (20.
         loc2 = s2 * m_per_px(Hr, points) ** 2
         return np.sqrt(np.maximum(var, 0) + loc2)
 
-    return {"H": Hr, "support": float(hit.mean()), "worst": worst, "error_m": err, "sigma": sigma}
+    uncertainty = region_error(sigma, region)
+    return {"H": Hr, "support": float(hit.mean()), "worst": worst, "error_m": err, "sigma": sigma,
+            "uncertainty_m": uncertainty if uncertainty is not None else float("inf")}
 
 
 def icp_init(H, masks, radii=(200, 150, 100, 70, 45, 25, 12)):
@@ -496,15 +507,20 @@ MAX_LOO_M = 3.0  # loose keypoint-only gate; the line checks are the real test
 KP_CONF = 0.5
 BORDER_PX = 8  # keypoints this close to the frame edge are usually clipped predictions
 MIN_SUPPORT, MIN_LINE_SUPPORT, MAX_ERROR_M = 0.5, 0.3, 1.0
+MAX_POSITION_ERROR_M = 1.0  # 90th-percentile 1-sigma position uncertainty over visible grass
 
 
 def passes(r):
     return bool(r["H"] is not None and r["sigma"] is not None and r["support"] >= MIN_SUPPORT
-                and r["worst"] >= MIN_LINE_SUPPORT and r["error_m"] <= MAX_ERROR_M)
+                and r["worst"] >= MIN_LINE_SUPPORT and r["error_m"] <= MAX_ERROR_M
+                and r["uncertainty_m"] <= MAX_POSITION_ERROR_M)
 
 
 def region_error(sigma, region, step=40):
-    """Largest 1-sigma position error over the visible grass (a conservative per-frame number)."""
+    """90th-percentile 1-sigma position error over the visible grass; inf if any of it is unobservable.
+    Not the maximum: the grass mask's edge samples (stands, frame corners) extrapolate far from every
+    line and would reject frames that locate 90% of the pitch to a few decimetres. Each player still
+    carries its own per-point uncertainty."""
     h, w = region.shape[:2]
     ys, xs = np.mgrid[step // 2:h:step, step // 2:w:step]
     pts = np.c_[xs.ravel(), ys.ravel()].astype(float)
@@ -512,7 +528,7 @@ def region_error(sigma, region, step=40):
     if not len(pts):
         return None
     s = sigma(pts)
-    return float(np.nanmax(s)) if np.isfinite(s).any() else None
+    return float(np.percentile(s, 90)) if np.isfinite(s).all() else float("inf")
 
 
 def calibrate_frame(frame, kps, masks=None):
@@ -567,5 +583,6 @@ def calibrate_frame(frame, kps, masks=None):
     out.update(H=best["H"], ok=ok, loo_m=best.get("loo_m"), support=best["support"], worst_line=best["worst"],
                error_m=best["error_m"] if np.isfinite(best["error_m"]) else None, sigma=best["sigma"],
                failure=None if ok else f"line check failed (support {best['support']:.2f}, "
-                                        f"worst line {best['worst']:.2f})")
+                                        f"worst line {best['worst']:.2f}, "
+                                        f"position uncertainty {best['uncertainty_m']:.2f} m)")
     return out

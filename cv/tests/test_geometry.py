@@ -67,6 +67,28 @@ def test_line_refinement_fixes_small_error_and_rejects_wrong_calibration():
     assert not pitch.passes(pitch.refine(wrong, masks, none, none))
 
 
+def test_shadowed_painted_lines_remain_calibratable():
+    G = camera()
+    # Same geometry, dark stadium shadow; paint's absolute contrast falls below 25.
+    image = (render(G).astype(float) * 0.25).astype(np.uint8)
+    none = np.zeros((0, 2))
+    r = pitch.refine(np.linalg.inv(G), pitch.line_mask(image), none, none)
+    assert pitch.passes(r) and r["support"] > 0.9
+
+
+def test_closeup_of_one_line_cannot_establish_metric_positions():
+    # Only the halfway line is visible. Sliding metres along it leaves the image
+    # unchanged, so perfect painted-line support is not enough for calibration.
+    G = np.array([[28., 0., -830.], [0., 31., -31.], [0., 0., 1.]])
+    masks = pitch.line_mask(render(G))
+    none = np.zeros((0, 2))
+    r = pitch.refine(np.linalg.inv(G), masks, none, none)
+    assert r["support"] > 0.99 and r["error_m"] < 0.1
+    assert not pitch.passes(r)
+    # A finite patch must not conceal an unobservable part of the visible grass.
+    assert pitch.region_error(lambda pts: np.where(pts[:, 0] < 640, 0.1, np.inf), masks[1]) == float("inf")
+
+
 def _solid(bgr, seed):
     rng = np.random.default_rng(seed)
     img = np.full((90, 160, 3), bgr, np.uint8)

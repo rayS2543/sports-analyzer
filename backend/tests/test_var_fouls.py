@@ -202,3 +202,52 @@ def test_crashed_job_is_reported_failed(client, data):
         client.post("/var/fouls", json=BODY)
     got = client.get(Q).json
     assert got["status"] == "failed" and "exited with code 1" in got["error"]
+
+
+# ---------- several angles of one incident ----------
+
+def angle(team="A", **ind):
+    return {"id": 0, "t": 3.3, "players": {"challenger": {"team": team}}, "indicators": ind, "dogso": {}}
+
+
+def test_combine_takes_each_indicator_from_the_angle_that_saw_it_best():
+    live = angle(contact=I(True, conf=0.57), challenger_speed=I(8.2, conf=0.7), studs_showing=HIDDEN)
+    replay = angle(contact=I(True, conf=0.8), challenger_speed=HIDDEN, studs_showing=I(True, conf=0.75),
+                   contact_above_ankle=I(True, conf=0.7), challenging_for_ball=I(True))
+    out = var_fouls.combine([("live", live), ("replay", replay)])
+    sfp = next(g for g in out["grounds"] if g["ground"] == "serious_foul_play")
+    used = {i["key"]: i for i in sfp["indicators"]}
+    assert used["contact"]["angle"] == "replay" and used["challenger_speed"]["angle"] == "live"
+    assert used["studs_showing"]["detail"].startswith("[replay]")
+    assert sfp["verdict"] == "red" and out["sanction"] == "red"
+    assert [a["angle"] for a in out["angles"]] == ["live", "replay"]
+
+
+def test_combine_does_not_rely_on_contradicting_angles():
+    a = angle(contact=I(True, conf=0.9))
+    b = angle(contact=I(False, conf=0.7))
+    got = var_fouls.combine([("a", a), ("b", b)])
+    contact = next(i for i in got["grounds"][0]["indicators"] if i["key"] == "contact")
+    assert not contact["observable"] and "contradict" in contact["detail"]
+    assert got["grounds"][0]["verdict"] == "inconclusive"
+    weak = var_fouls.combine([("a", angle(studs_showing=I(False, conf=0.34))), ("b", angle(studs_showing=I(True, conf=0.28)))])
+    studs = next(i for g in weak["grounds"] for i in g["indicators"] if i["key"] == "studs_showing")
+    assert "Other angles disagree (b: yes (28%))" in studs["detail"]
+
+
+def test_combine_refuses_challengers_from_different_teams():
+    with pytest.raises(ValueError):
+        var_fouls.combine([("a", angle("A")), ("b", angle("B"))])
+
+
+def test_combine_route(client, data):
+    other = data.parent / "23.0-28.0"
+    other.mkdir()
+    (data / "fouls.json").write_text(json.dumps({"incidents": [angle(challenger_speed=I(8.0))]}))
+    (other / "fouls.json").write_text(json.dumps({"incidents": [angle(contact=I(True))]}))
+    url = "/var/fouls/44656413/combine"
+    r = client.post(url, json={"parts": [{"start": 12, "end": 18, "id": 0}, {"start": 23, "end": 28, "id": 0}]})
+    assert r.status_code == 200 and len(r.json["angles"]) == 2
+    assert client.post(url, json={"parts": [{"start": 12, "end": 18, "id": 0}]}).status_code == 400
+    assert client.post(url, json={"parts": [{"start": 12, "end": 18, "id": 0}, {"start": 12, "end": 18, "id": 0}]}).status_code == 400
+    assert client.post(url, json={"parts": [{"start": 12, "end": 18, "id": 0}, {"start": 23, "end": 28, "id": 9}]}).status_code == 404

@@ -210,6 +210,47 @@ def assess_incident(inc):
             "attack_direction": factors.get("attack_direction")}
 
 
+def _pick(readings):
+    """One indicator from several camera angles: the most confident observable reading, unless two
+    reliable readings contradict each other, in which case nothing is relied on."""
+    seen = [(angle, i) for angle, i in readings if isinstance(i, dict) and i.get("observable") and i.get("value") is not None]
+    if not seen:
+        return dict(readings[0][1] or {}) if readings else None
+    angle, best = max(seen, key=lambda ai: ai[1].get("confidence") or 0)
+    firm = [(a, i) for a, i in seen if _reliable(i)]
+    if any(isinstance(i["value"], bool) and i["value"] != best["value"] for _, i in firm):
+        views = "; ".join(f"{a}: {'yes' if i['value'] else 'no'} ({i['confidence']:.0%})" for a, i in firm)
+        return dict(best, value=None, confidence=0.0, observable=False, detail=f"Angles contradict each other ({views}).")
+    other = "; ".join(f"{a}: {'yes' if i['value'] else 'no'} ({(i.get('confidence') or 0):.0%})"
+                      for a, i in seen if isinstance(i["value"], bool) and i["value"] != best["value"])
+    return dict(best, angle=angle, detail=f"[{angle}] {best.get('detail') or ''}".strip()
+                + (f" Other angles disagree ({other})." if other else ""))
+
+
+def combine(parts):
+    """One incident seen from several windows (camera angles) of the same clip.
+
+    parts: [(angle label, raw fouls.json incident)]. Each indicator and DOGSO factor comes from the angle
+    that observed it most confidently (e.g. contact from a close-up replay, speed from the calibrated
+    live camera). Raises ValueError when the angles cannot be the same incident (opposite kits)."""
+    teams = {(p.get("players") or {}).get("challenger", {}).get("team") for _, p in parts} - {None}
+    if len(teams) > 1:
+        raise ValueError("The selected challenges have challengers from different teams, so they are not the same incident.")
+    merged = {"indicators": {}, "dogso": {}}
+    for field in merged:
+        keys = {k for _, p in parts for k in (p.get(field) or {})}
+        for k in keys:
+            vals = [(a, (p.get(field) or {}).get(k)) for a, p in parts]
+            if all(isinstance(v, dict) and "confidence" in v for _, v in vals if v is not None):
+                merged[field][k] = _pick([(a, v) for a, v in vals if v is not None])
+            else:
+                merged[field][k] = next((v for _, v in vals if v is not None), None)
+    first = parts[0][1]
+    out = assess_incident(dict(first, **merged, calibrated=any(p.get("calibrated") for _, p in parts)))
+    out["angles"] = [{"angle": a, "t": p.get("t"), "id": p.get("id")} for a, p in parts]
+    return out
+
+
 def review(fouls):
     incidents = [assess_incident(i) for i in fouls.get("incidents") or []]
     if not incidents:

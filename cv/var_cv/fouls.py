@@ -66,6 +66,7 @@ LOC_SCALE_M = 0.2      # localisation error (m) at which image-plane contact geo
 BALL_REACH_M = 1.2     # challenger's foot this close to the ball around the contact = challenging for it
 KP_CONF = 0.5          # keypoint visibility threshold
 CONTACT_M = 1.2        # ground distance for a contact candidate
+APART_M = 2.0          # tracked ground positions further apart than this cannot be touching (depth illusion)
 MAX_CANDIDATES = 6
 PAD_S = 0.4            # pose span around the candidate
 MERGE_GAP_S = 0.5      # candidate hits of one pair closer than this are one candidate
@@ -632,7 +633,8 @@ def _same_person(a, b):
     if both.sum() < 4:
         return False
     span = max(1.0, float(np.ptp(a[both, 1])))
-    return float(np.linalg.norm(a[both, :2] - b[both, :2], axis=1).mean()) < 0.1 * span
+    # median: two estimates of one occluded body often agree on head and torso but split the legs
+    return float(np.median(np.linalg.norm(a[both, :2] - b[both, :2], axis=1))) < 0.1 * span
 
 
 # ---------- per-candidate measurement ----------
@@ -782,21 +784,28 @@ def _onset(posed):
     return closest
 
 
+LEG_STRIKERS = {k: v for k, v in STRIKERS.items() if k[1:] in ("ank", "kne")}
+
+
 def _onsets(posed, gap_s=0.3, limit=3):
     """Onsets of separate contact episodes (runs of touching frames more than gap_s apart), earliest first,
     at most `limit`; a long proximity span can hold a brush of arms and, later, the actual challenge.
-    Without any touching frame: [the closest approach]."""
-    out, last = [], None
-    for r in posed:
-        cs = [(j, nearest_contact(r["kps"][j], r["kps"][1 - j], body_height_px(r["kps"][1 - j], r["boxes"][1 - j]))) for j in (0, 1)]
-        cs = [(j, c) for j, c in cs if c and c["d"] <= TOUCH]
-        if not cs:
-            continue
-        if last is None or r["t"] - last > gap_s:
-            j, c = min(cs, key=lambda jc: jc[1]["d"])
-            out.append((r, j, c))
-        last = r["t"]
-    return out[:limit] or [_onset(posed)]
+    Leg contacts are runs of their own (in a close-up some arm touches in every frame and would swallow the
+    kick) and take the `limit` slots first. Without any touching frame: [the closest approach]."""
+    runs = []
+    for strikers in (LEG_STRIKERS, STRIKERS):
+        last = None
+        for r in posed:
+            cs = [(j, nearest_contact(r["kps"][j], r["kps"][1 - j], body_height_px(r["kps"][1 - j], r["boxes"][1 - j]), strikers))
+                  for j in (0, 1)]
+            cs = [(j, c) for j, c in cs if c and c["d"] <= TOUCH]
+            if not cs:
+                continue
+            if (last is None or r["t"] - last > gap_s) and all(o[0] is not r for o in runs):
+                j, c = min(cs, key=lambda jc: jc[1]["d"])
+                runs.append((r, j, c))
+            last = r["t"]
+    return sorted(runs[:limit], key=lambda o: o[0]["t"]) or [_onset(posed)]
 
 
 def measure(cand, analysis, tracks, cap, fps, size, models, homs, debug_dir=None):
@@ -808,7 +817,13 @@ def measure(cand, analysis, tracks, cap, fps, size, models, homs, debug_dir=None
     # coarse-to-fine: pose at ~COARSE_HZ over the span, then every frame around the contact onset
     step = max(1, round(fps / COARSE_HZ))
     run_pose(recs[::step], models)
-    both = lambda: [r for r in recs if r["kps"][0] is not None and r["kps"][1] is not None]
+
+    def apart(r):  # image overlap of players who are metres apart in depth is not an onset
+        a, b = _xy(ta, r["t"]), _xy(tb, r["t"])
+        return r["G"] is not None and a is not None and b is not None and math.hypot(a[0] - b[0], a[1] - b[1]) > APART_M
+
+    both = lambda: [r for r in recs if r["kps"][0] is not None and r["kps"][1] is not None and not apart(r)] \
+        or [r for r in recs if r["kps"][0] is not None and r["kps"][1] is not None]
     for onset in _onsets(both()) if both() else []:
         k = recs.index(onset[0])
         run_pose(recs[max(0, k - step):k + step + 1], models)
@@ -884,10 +899,11 @@ def _at_onset(cand, analysis, fps, size, models, debug_dir, recs, posed, ta, tb,
     c_conf = contact["conf"] * size_q * (1.0 if contact["d"] <= TOUCH / 2 or contact["d"] >= NEAR else 0.7)
     detail = (f"{STRIKERS[contact['striker']]} of the challenger within {contact['d'] * BODY_M * 100:.0f} cm "
               f"(image plane, scaled to a 1.80 m body) of the victim's {contact['part']}.")
+    gd = None
     if cam and vxy and cxy:
         gd = math.hypot(vxy[0] - cxy[0], vxy[1] - cxy[1])
         detail += f" Tracked ground positions {gd:.1f} m apart."
-        if gd > 2.0:
+        if gd > APART_M:
             touching, c_conf = False, c_conf * 0.8
             detail += " Too far apart on the ground for contact: the overlap is a depth illusion."
     else:
@@ -994,7 +1010,7 @@ def _at_onset(cand, analysis, fps, size, models, debug_dir, recs, posed, ta, tb,
         indicators["challenging_for_ball"] = ind("Challenging for the ball", None, 0, False, "Ball not detected near the contact.")
 
     # off-ball strike: hand/elbow to the head, with arm speed
-    indicators["off_ball_strike"] = _arm_strike(posed, ci, vi, indicators["challenging_for_ball"])
+    indicators["off_ball_strike"] = _arm_strike(posed, ci, vi, indicators["challenging_for_ball"], gd)
 
     # DOGSO: calibrated sampled frame nearest the contact, same shot
     frame, fG = rec["G_sample"] or (None, None)  # positions are read in that sample's own image, so its own G
@@ -1016,8 +1032,19 @@ def _at_onset(cand, analysis, fps, size, models, debug_dir, recs, posed, ta, tb,
         notes.append("No calibrated camera at the contact frame: heights use the victim's skeleton proportions and "
                      "ground speed / DOGSO factors are not observable.")
     notes.append(f"Challenger chosen because {basis}.")
+    players = _players(cand, ta, tb, ci)
+    km = analysis.get("kit_model")
+    if km is not None:  # close-up: tracks can swap in a tangle, so the team is the measured bodies' own shirts
+        kits = {role: clear_kit(km, torso_kit(rec["frame"], rec["kps"][j], rec["boxes"][j]))
+                for role, j in (("challenger", ci), ("victim", vi))}
+        # only a consistent opponent pair overrides: overlapping shirts can make both crops read one kit
+        if None not in kits.values() and kits["challenger"] != kits["victim"] and kits["challenger"] != players["challenger"]["team"]:
+            for role, kit in kits.items():
+                players[role] = dict(players[role], team=kit)
+            notes.append("Teams read from the shirts of the posed bodies at the contact frame (the tracks' majority kits "
+                         "differ: likely an ID swap in the tangle).")
     out = dict(base, t=round(t_c, 3), frame_index=rec["i"], calibrated=bool(cam),
-               players=_players(cand, ta, tb, ci), indicators=indicators, dogso=dogso, notes=notes,
+               players=players, indicators=indicators, dogso=dogso, notes=notes,
                pose_quality={"victim_height_px": round(vh), "challenger_height_px": round(ch), "size_factor": round(size_q, 2),
                              "keypoint_error_m": round(loc_err_m, 3), "pose_models_disagreement_px": None if dis is None else round(dis, 1),
                              "ball_frames": len(balls)})
@@ -1116,7 +1143,9 @@ def _airborne(pre, ci, vi, chal_track, size):
                lift_m=round(best[0], 2))
 
 
-def _arm_strike(posed, ci, vi, ball_ind):
+def _arm_strike(posed, ci, vi, ball_ind, ground_m=None):
+    """ground_m: tracked distance between the players (None = uncalibrated): image-plane overlap needs the
+    same depth check as contact."""
     label = "Hand / arm to the head"
     best = None
     seen_arms = False
@@ -1152,7 +1181,14 @@ def _arm_strike(posed, ci, vi, ball_ind):
         detail += f" Arm moving {speed:.1f} m/s relative to the shoulders at that moment."
     if ball_ind["observable"] and ball_ind["value"] is False:
         detail += " The ball was not playable (off-ball)."
-    return ind(label, bool(hit), conf * min(1.0, vh / 150) * (0.9 if not TOUCH / 2 < d < NEAR else 0.6), detail=detail,
+    conf *= min(1.0, vh / 150) * (0.9 if not TOUCH / 2 < d < NEAR else 0.6)
+    if ground_m is None:
+        conf *= 0.85
+        detail += " Depth not verified (no calibration): image-plane only."
+    elif ground_m > APART_M and hit:
+        hit, conf = False, conf * 0.8
+        detail += f" Tracked ground positions {ground_m:.1f} m apart: the overlap is a depth illusion."
+    return ind(label, bool(hit), conf, detail=detail,
                arm=STRIKERS[n], arm_speed_mps=None if speed is None else round(speed, 1))
 
 
@@ -1250,11 +1286,19 @@ def torso_kit(frame, kps, box):
     return teams.kit_feature(frame, (x1, y1, x1 + W, y1 + H))
 
 
-def closeup_analysis(analysis, shots, cap, fps, model, device, sample_hz=10):
+def clear_kit(model, feature):
+    """'A' / 'B' when the kit clearly belongs to one team, else None (ambiguous, referee or keeper kit)."""
+    if feature is None or model is None or model.margin(feature) <= 0.3 or model.odd(feature):
+        return None
+    return model.predict(feature)
+
+
+def closeup_analysis(analysis, shots, cap, fps, model, device, sample_hz=10, clip_model=None):
     """Players for close-up shots found by the pose model's own person detector: tracked per shot
-    (track.assign_ids, fresh per shot). Teams: 2-means on the close-up's own shirt colours (from the pose
-    torso), by track majority, with a ratio test so ambiguous kits (referee, keeper) stay null. Team letters
-    here are only used to tell opponents apart. No positions: these shots are uncalibrated."""
+    (track.assign_ids, fresh per shot). Teams: the clip's kit model (team_model.json, so A/B mean the same
+    kits as in every other window), else 2-means on the close-up's own shirt colours (from the pose torso);
+    by track majority, with a ratio test so ambiguous kits (referee, keeper) stay null. No positions: these
+    shots are uncalibrated."""
     from . import teams, track
     frames, per_shot = [], []
     for shot in shots:
@@ -1276,15 +1320,13 @@ def closeup_analysis(analysis, shots, cap, fps, model, device, sample_hz=10):
             boxes, kd = boxes[keep], kd[keep]
             recs.append((i / fps, boxes, [torso_kit(frame, k, b) for k, b in zip(kd, boxes)]))
         per_shot.append((shot, recs, track.assign_ids([(b, lambda q: q) for _, b, _ in recs])))
-    model_t = teams.fit([f for _, recs, _ in per_shot for _, _, fs in recs for f in fs if f is not None])
+    model_t = clip_model or teams.fit([f for _, recs, _ in per_shot for _, _, fs in recs for f in fs if f is not None])
     for shot, recs, ids in per_shot:
         votes = {}
         for (_, _, feats), tids in zip(recs, ids):
             for f, tid in zip(feats, tids):
-                if f is None or model_t is None:
-                    continue
-                if model_t.margin(f) > 0.3 and not model_t.odd(f):  # clearly one of the two kits
-                    votes.setdefault(int(tid), Counter())[model_t.predict(f)] += 1
+                if clear_kit(model_t, f):
+                    votes.setdefault(int(tid), Counter())[clear_kit(model_t, f)] += 1
         team = {tid: v.most_common(1)[0][0] for tid, v in votes.items()}
         ball = [f for f in analysis["frames"] if f["shot"] == shot["id"] and f.get("ball")]
         for (t, boxes, _), tids in zip(recs, ids):
@@ -1294,7 +1336,8 @@ def closeup_analysis(analysis, shots, cap, fps, model, device, sample_hz=10):
                            "players": [{"track_id": CLOSEUP_ID_BASE + int(tid), "team": team.get(int(tid)), "role": "player",
                                         "x": None, "y": None, "bbox": [round(float(v), 1) for v in box], "source": "closeup_pose"}
                                        for box, tid in zip(boxes, tids)]})
-    return {"shots": analysis["shots"], "frames": frames, "teams": None if model_t is None else {k: {"color": c} for k, c in model_t.colours().items()}}
+    return {"shots": analysis["shots"], "frames": frames, "kit_model": model_t,
+            "teams": None if model_t is None else {k: {"color": c} for k, c in model_t.colours().items()}}
 
 
 def run(args):
@@ -1330,7 +1373,10 @@ def run(args):
         work = [(analysis, cands, "analysis")]
         if close:
             progress(0.08, f"detecting players in {len(close)} close-up shot(s)")
-            synth = closeup_analysis(analysis, close, cap, fps, models.pose, dev)
+            from . import teams
+            kits = Path(args.video).parent / "team_model.json"
+            clip_model = teams.TeamModel.from_json(json.loads(kits.read_text())) if kits.exists() else None
+            synth = closeup_analysis(analysis, close, cap, fps, models.pose, dev, clip_model=clip_model)
             c2, t2 = find_candidates(synth)
             result["candidates_found"] += t2
             work.append((synth, c2, "closeup_pose"))
@@ -1342,17 +1388,40 @@ def run(args):
                 inc["source"] = tag
                 if tag == "closeup_pose":
                     inc["notes"].insert(0, "Close-up shot: players found by the pose model because the wide-view detector tracked none; "
-                                           "track ids are separate from the analysis' ids and teams come from kit colour.")
+                                           "track ids are separate from the analysis' ids and teams come from kit colour"
+                                           + (" (the clip's kit model)." if clip_model else " (this shot's own kit clusters: A/B may not match other windows)."))
                 result["incidents"].append(inc)
         cap.release()
         result["pipeline"].update(device=dev, fps=round(fps, 3), foot_model_loaded=models.foot is not None,
                                   ball_model_loaded=models.ball is not None)
-    result["incidents"].sort(key=lambda i: i["t"])
+    result["incidents"] = dedupe(result["incidents"])
     for n, inc in enumerate(result["incidents"]):
         inc["id"] = n
     result["pipeline"]["elapsed_seconds"] = round(time.time() - t_start, 1)
     write_json(out, result)
     progress(1.0, f"{len(result['incidents'])} contact candidate(s) examined")
+
+
+def dedupe(incidents):
+    """Sorted by time, without repeats of one physical contact: same frame, same victim, same striking part
+    on the same body part. Overlapping tracks of one body (common in close-ups) each yield a candidate;
+    the most confident copy is kept."""
+    def key(i):
+        c = i["indicators"]["contact"]
+        v = (i["players"].get("victim") or {}).get("track_id")
+        return None if v is None or not c.get("striking_part") else (round(i["t"], 2), v, c["striking_part"], c.get("body_part"))
+
+    best = {}
+    for i in incidents:
+        k = key(i) or id(i)
+        if k in best:
+            keep, drop = sorted((best[k], i), key=lambda x: -x["indicators"]["contact"]["confidence"])
+            keep["notes"].append(f"Same contact also found via track {drop['players']['challenger']['track_id']} "
+                                 "(one body tracked twice).")
+            best[k] = keep
+        else:
+            best[k] = i
+    return sorted(best.values(), key=lambda i: i["t"])
 
 
 def main(argv=None):

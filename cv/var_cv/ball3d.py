@@ -29,8 +29,9 @@ Method
    is the better of
        rolling:   h = 0,  x = x0 + vx t + ax t^2/2 (same for y), weak prior |a| ~ 2 m/s^2   (k = 4)
        ballistic: x = x0 + vx t, y = y0 + vy t, h = z0 + vz t - 9.81 t^2 / 2, h >= 0     (k = 6)
-   The break penalty is lower where the ball is at a player's feet (kicks, deflections); bounces
-   show up as a ballistic segment ending at h = 0. Residuals are made linear in the parameters
+   There is no break penalty where the ball is at a player's feet (kicks, deflections) or where the
+   previous flight has reached the grass (bounces). Hard-hit flights (> DRAG_MIN_MPS) are refitted with
+   quadratic air drag held constant at the mid-flight velocity; the drag fit is kept when it costs less. Residuals are made linear in the parameters
    (u * p3.X - p1.X, divided by the current depth: iteratively reweighted, converges to the pixel error);
    residuals over 4 sigma are truncated (outlier detections).
 4. Output: height from the segment model; ground point = the observed ray cut at that height, so the
@@ -59,6 +60,8 @@ MAX_SPEED = 45.0    # m/s: faster fits are not a football
 HOP_WINDOW = 7      # detections at each end of a rolling segment re-tested for a hidden hop
 AT_FEET_BAND = 0.2  # ball bottom in the lowest 20% of a player's box = at his feet (~0.35 m of leg)
 AT_FEET_SIGMA_M = 0.35
+DRAG_K = 0.0133     # 1/m: rho Cd A / 2m, air 1.2 kg/m^3, Cd 0.25 (fast ball, past the drag crisis), size-5 ball
+DRAG_MIN_MPS = 15.0 # below this drag moves the ball < ~0.3 m over a typical segment: ignored
 
 
 def camera_from_homography(H, width, height):
@@ -105,11 +108,14 @@ def _focal_scale(P, width, height):
 
 # ---------- trajectory models: X(tau) = A(tau) theta + b(tau), X = (x, y, observed-point height) ----------
 
-def _design(model, tau, off):
+def _design(model, tau, off, acc=None):
+    """acc: constant extra acceleration (x, y, h) of a ballistic segment (air drag), or None."""
     n = len(tau)
     A = np.zeros((n, 3, 6))
     b = np.zeros((n, 3))
     b[:, 2] = off
+    if acc is not None:
+        b += 0.5 * np.outer(tau ** 2, acc)
     A[:, 0, 0] = A[:, 1, 1] = 1
     if model == "ballistic":  # x0 y0 z0 vx vy vz
         A[:, 2, 2] = 1
@@ -121,21 +127,24 @@ def _design(model, tau, off):
     return A, b
 
 
-def _fit(model, obs, idx, theta0=None, anchors=()):
+def _fit(model, obs, idx, theta0=None, anchors=(), acc=None):
     """Robust fit of one model to observations idx (Levenberg-Marquardt on pixel error).
     theta0: warm start (same t0). anchors: [(t, (x, y, h), sigma_m)] continuity with neighbouring
-    segments (the ball does not teleport at a kick or bounce). Returns dict or None."""
+    segments (the ball does not teleport at a kick or bounce). acc: fixed drag acceleration (ballistic).
+    A ballistic fit faster than DRAG_MIN_MPS is refit once with drag from its own launch velocity.
+    Returns dict or None."""
     t, P, u, off, r, f, s, sp = (obs[k][idx] for k in ("t", "P", "u", "off", "r", "f", "s", "sig"))
     sp = sp[:, None]
     tau = t - t[0]
-    A, b = _design(model, tau, off)
+    A, b = _design(model, tau, off, acc if model == "ballistic" else None)
     MA = np.einsum("njk,nkp->njp", P[:, :, :3], A)                 # dq/dtheta, n x 3 x 6
     q0 = np.einsum("njk,nk->nj", P[:, :, :3], b) + P[:, :, 3]      # q = MA theta + q0
     has_r = ~np.isnan(r)
     r0, sig_r, fRs = np.nan_to_num(r), 1.0 + 0.15 * np.nan_to_num(r), f * BALL_R * s
     T = tau[-1]
     if anchors:
-        An, bn = _design(model, np.array([a[0] for a in anchors]) - t[0], np.zeros(len(anchors)))
+        An, bn = _design(model, np.array([a[0] for a in anchors]) - t[0], np.zeros(len(anchors)),
+                         acc if model == "ballistic" else None)
         Xn = np.array([a[1] for a in anchors], float)
         sn = np.array([a[2] for a in anchors], float)[:, None]
         if model == "rolling":
@@ -211,8 +220,21 @@ def _fit(model, obs, idx, theta0=None, anchors=()):
         speed = np.linalg.norm(theta[2:4] + np.outer(tau[[0, -1]], theta[4:6]), axis=1).max()
     if speed > MAX_SPEED:
         return None
-    return {"model": model, "theta": theta, "idx": idx, "t0": t[0], "chi2": c, "inlier": inlier,
-            "cost": c + k * np.log(max(nres, 2)), "J": J, "nres": nres, "k": k}
+    out = {"model": model, "theta": theta, "idx": idx, "t0": t[0], "chi2": c, "inlier": inlier,
+           "cost": c + k * np.log(max(nres, 2)), "J": J, "nres": nres, "k": k, "acc": acc}
+    if model == "ballistic" and acc is None and speed > DRAG_MIN_MPS and DRAG_K > 0:
+        # ponytail: constant drag from the mid-flight velocity (2 fixed-point passes); integrate the ODE if needed
+        best, a, th = out, np.zeros(3), theta
+        for _ in range(2):
+            vmid = th[3:6] + (a + [0, 0, -G]) * T / 2
+            a = -DRAG_K * np.linalg.norm(vmid) * vmid
+            d = _fit(model, obs, idx, th, anchors, acc=a)
+            if d is None:
+                break
+            th = d["theta"]
+            best = min(best, d, key=lambda fit: fit["cost"])  # drag kept only when the data prefer it
+        return best
+    return out
 
 
 def _inits(model, tau, P, u, off, sig):
@@ -265,7 +287,7 @@ def _residuals(obs, idx, X):
 
 def _position(fit, t):
     """(x, y, h of the ball's bottom) of a fitted segment at times t."""
-    A, b = _design(fit["model"], np.asarray(t, float) - fit["t0"], np.zeros(len(t)))
+    A, b = _design(fit["model"], np.asarray(t, float) - fit["t0"], np.zeros(len(t)), fit.get("acc"))
     return np.einsum("nkp,p->nk", A, fit["theta"]) + b
 
 
@@ -330,7 +352,7 @@ def _height(fit, t):
     th, tau = fit["theta"], np.asarray(t) - fit["t0"]
     if fit["model"] == "rolling":
         return np.zeros_like(tau), np.zeros_like(tau)
-    h = th[2] + th[5] * tau - G * tau ** 2 / 2
+    h = th[2] + th[5] * tau - G * tau ** 2 / 2 + (0.5 * fit["acc"][2] * tau ** 2 if fit.get("acc") is not None else 0)
     return h, np.c_[np.zeros((len(tau), 2)), np.ones(len(tau)), np.zeros((len(tau), 2)), tau]
 
 
@@ -359,6 +381,11 @@ def _height_sigma(fit, obs, idx, t=None):
     return np.sqrt(np.maximum(np.einsum("np,pq,nq->n", g, cov, g), 0))
 
 
+def _lands(prev, t):
+    """The segment before t is a flight that reaches the grass by t: a bounce is a free breakpoint, like a kick."""
+    return prev is not None and prev[0] is not None and prev[0]["model"] == "ballistic" and _height(prev[0], [t])[0][0] <= 0
+
+
 def segment(obs, near):
     """Optimal segmentation of one shot's observations (dynamic programming with PELT pruning:
     a start whose segment already fits worse than the best split so far can never win later).
@@ -374,7 +401,7 @@ def segment(obs, near):
         chi = {}
         for i in alive:
             idx = np.arange(i, j)
-            pen = 0.0 if i == 0 or near[i] or near[i - 1] else BREAK
+            pen = 0.0 if i == 0 or near[i] or near[i - 1] or _lands(choice[i], obs["t"][i]) else BREAK
             if j - i < MIN_OBS:  # too short to judge: pay a flat price per observation
                 fit, cost = None, OUTLIER * 0.75 * (j - i)
             else:

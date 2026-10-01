@@ -9,7 +9,7 @@ from pathlib import Path
 from flask import Blueprint, jsonify, request
 
 from routes.var_analysis import ID, MAX_WINDOW_SECONDS, ROOT, _out, _read, _window
-from var_fouls import review
+from var_fouls import combine, review
 
 var_fouls_bp = Blueprint("var_fouls", __name__)
 STALE_SECONDS = 600
@@ -95,3 +95,25 @@ def get(clip_id):
         else:
             body.update(review(data))
     return jsonify(body)
+
+
+@var_fouls_bp.post("/var/fouls/<clip_id>/combine")
+def combine_angles(clip_id):
+    """One incident from several reviewed windows (camera angles) of the clip: body {"parts": [{start, end, id}]}."""
+    parts = (request.get_json(silent=True) or {}).get("parts")
+    if not ID.fullmatch(clip_id) or not isinstance(parts, list) or not 2 <= len(parts) <= 4:
+        return jsonify(error="A numeric clip ID and 2-4 parts ({start, end, id}) are required"), 400
+    found = []
+    for p in parts:
+        key = _window(p.get("start"), p.get("end")) if isinstance(p, dict) else None
+        data = _read(_files(clip_id, key)[0]) if key else None
+        inc = next((i for i in (data or {}).get("incidents") or [] if i.get("id") == p.get("id")), None)
+        if inc is None:
+            return jsonify(error=f"No reviewed challenge {p.get('id') if isinstance(p, dict) else p} in window {key}"), 404
+        found.append((key, inc))
+    if len({k for k, _ in found}) != len(found):
+        return jsonify(error="Pick challenges from different windows (angles)"), 400
+    try:
+        return jsonify(combine(found))
+    except ValueError as e:
+        return jsonify(error=str(e)), 409
