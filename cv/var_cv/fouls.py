@@ -340,8 +340,15 @@ def _xy(track, t):
     return None if x is None or y is None else (float(x), float(y))
 
 
-def _velocity(track, t):
-    """Ground velocity (m/s) near t: the analysis' own vx/vy (v2) or a finite difference over <= 0.6 s."""
+def _speed(analysis, shot_id):
+    """Playback speed of a shot (1 = real time; s < 1 = slow-motion replay, from var_cv.crossview)."""
+    shot = next((s for s in analysis.get("shots") or [] if s["id"] == shot_id), None)
+    return float((shot or {}).get("playback_speed") or 1.0)
+
+
+def _velocity(track, t, speed=1.0):
+    """Ground velocity (m/s, real time) near t: the analysis' own vx/vy (v2; already real time) or a finite
+    difference over <= 0.6 s of shot time, divided by the shot's playback speed."""
     near = min(track, key=lambda e: abs(e[0] - t))
     p = near[1]
     if p.get("vx") is not None and p.get("vy") is not None and abs(near[0] - t) <= 0.2:
@@ -349,7 +356,7 @@ def _velocity(track, t):
     pts = [(tt, q["x"], q["y"]) for tt, q, _ in track if q.get("x") is not None and abs(tt - t) <= 0.3]
     if len(pts) >= 2 and pts[-1][0] - pts[0][0] >= 0.15:
         (t0, x0, y0), (t1, x1, y1) = pts[0], pts[-1]
-        v = ((x1 - x0) / (t1 - t0), (y1 - y0) / (t1 - t0))
+        v = ((x1 - x0) / (t1 - t0) / speed, (y1 - y0) / (t1 - t0) / speed)
         if math.hypot(*v) <= MAX_SPEED_MPS:  # faster than a sprinter = track swap or calibration jump
             return v, "finite difference of tracked ground positions"
     return None, None
@@ -936,14 +943,16 @@ def _at_onset(cand, analysis, fps, size, models, debug_dir, recs, posed, ta, tb,
             height_m=round(h_model, 2), height_uncertainty_m=0.25, method="skeleton")
 
     # challenger speed
-    vel, how = _velocity(chal_track, t_c)
+    speed = _speed(analysis, cand["shot"])  # slow-motion replay: shot seconds are not real seconds
+    vel, how = _velocity(chal_track, t_c, speed)
     if vel is None:
         indicators["challenger_speed"] = ind("Challenger speed at contact", None, 0, False,
                                              "No calibrated track around the contact, so ground speed in m/s is unknown.")
     else:
         sp = math.hypot(*vel)
         indicators["challenger_speed"] = ind("Challenger speed at contact", round(sp, 1), 0.7 if "vx/vy" in how else 0.55,
-                                             detail=f"From {how}.", unit="m/s")
+                                             detail=f"From {how}." + (f" Replay at x{speed:.2f}: converted to real time." if speed != 1.0 else ""),
+                                             unit="m/s", playback_speed=speed)
 
     # studs / sole
     foot = contact["striker"] in ("lank", "rank")
@@ -1010,7 +1019,7 @@ def _at_onset(cand, analysis, fps, size, models, debug_dir, recs, posed, ta, tb,
         indicators["challenging_for_ball"] = ind("Challenging for the ball", None, 0, False, "Ball not detected near the contact.")
 
     # off-ball strike: hand/elbow to the head, with arm speed
-    indicators["off_ball_strike"] = _arm_strike(posed, ci, vi, indicators["challenging_for_ball"], gd)
+    indicators["off_ball_strike"] = _arm_strike(posed, ci, vi, indicators["challenging_for_ball"], gd, speed)
 
     # DOGSO: calibrated sampled frame nearest the contact, same shot
     frame, fG = rec["G_sample"] or (None, None)  # positions are read in that sample's own image, so its own G
@@ -1018,7 +1027,7 @@ def _at_onset(cand, analysis, fps, size, models, debug_dir, recs, posed, ta, tb,
     if frame is not None:
         cp = next((p for p in frame["players"] if p["track_id"] == (cand["track_ids"][ci])), None)
         vp = next((p for p in frame["players"] if p["track_id"] == (cand["track_ids"][vi])), None)
-    vvel = _velocity(vic_track, t_c)[0]
+    vvel = _velocity(vic_track, t_c, speed)[0]
     challenger_team = Counter(p["team"] for _, p, _ in chal_track if p.get("team")).most_common(1)[0][0]
     goal = attacked_goal(analysis, cand["shot"], challenger_team, vvel)
     if cp is None or vp is None or vp.get("x") is None:
@@ -1143,7 +1152,7 @@ def _airborne(pre, ci, vi, chal_track, size):
                lift_m=round(best[0], 2))
 
 
-def _arm_strike(posed, ci, vi, ball_ind, ground_m=None):
+def _arm_strike(posed, ci, vi, ball_ind, ground_m=None, playback=1.0):
     """ground_m: tracked distance between the players (None = uncalibrated): image-plane overlap needs the
     same depth check as contact."""
     label = "Hand / arm to the head"
@@ -1174,7 +1183,7 @@ def _arm_strike(posed, ci, vi, ball_ind, ground_m=None):
             return None if not visible(k, n) or not sh else pt(k, n) - np.mean(sh, axis=0)
         ra, rb = rel(a), rel(b)
         if ra is not None and rb is not None and b["t"] > a["t"]:
-            speed = float(np.linalg.norm(rb - ra)) / vh * BODY_M / (b["t"] - a["t"])
+            speed = float(np.linalg.norm(rb - ra)) / vh * BODY_M / (b["t"] - a["t"]) / playback
     hit = d <= TOUCH
     detail = f"Closest {STRIKERS[n]} to the victim's head: {d * BODY_M * 100:.0f} cm (image plane)."
     if speed is not None:
@@ -1302,15 +1311,19 @@ def closeup_analysis(analysis, shots, cap, fps, model, device, sample_hz=10, cli
     from . import teams, track
     frames, per_shot = [], []
     for shot in shots:
-        step = max(1, round(fps / sample_hz))
-        f0, f1 = int(math.ceil(shot["start"] * fps)), int(math.floor(shot["end"] * fps))
-        cap.set(cv2.CAP_PROP_POS_FRAMES, f0)
+        # the analysis' own sampled frames, so close-up people line up with its frames (crossview pairs them)
+        idx = sorted({round(f["t"] * fps) for f in analysis["frames"] if f["shot"] == shot["id"]})
+        if not idx:
+            step = max(1, round(fps / sample_hz))
+            idx = list(range(int(math.ceil(shot["start"] * fps)), int(math.floor(shot["end"] * fps)) + 1, step))
+        want = set(idx)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx[0])
         recs = []
-        for i in range(f0, f1 + 1):
+        for i in range(idx[0], idx[-1] + 1):
             ok, frame = cap.read()
             if not ok:
                 break
-            if (i - f0) % step:
+            if i not in want:
                 continue
             r = model.predict(frame, device=device, verbose=False, conf=0.4)[0]
             boxes = r.boxes.xyxy.cpu().numpy().astype(float) if len(r.boxes) else np.zeros((0, 4))
@@ -1318,24 +1331,26 @@ def closeup_analysis(analysis, shots, cap, fps, model, device, sample_hz=10, cli
             # people on the pitch: tall enough, and feet below the top 30% of the frame (crowd above the ad boards)
             keep = ((boxes[:, 3] - boxes[:, 1]) >= CLOSEUP_MIN_PX) & (boxes[:, 3] > 0.3 * frame.shape[0])
             boxes, kd = boxes[keep], kd[keep]
-            recs.append((i / fps, boxes, [torso_kit(frame, k, b) for k, b in zip(kd, boxes)]))
-        per_shot.append((shot, recs, track.assign_ids([(b, lambda q: q) for _, b, _ in recs])))
-    model_t = clip_model or teams.fit([f for _, recs, _ in per_shot for _, _, fs in recs for f in fs if f is not None])
+            recs.append((i / fps, boxes, [torso_kit(frame, k, b) for k, b in zip(kd, boxes)], kd))
+        per_shot.append((shot, recs, track.assign_ids([(b, lambda q: q) for _, b, _, _ in recs])))
+    model_t = clip_model or teams.fit([f for _, recs, _ in per_shot for _, _, fs, _ in recs for f in fs if f is not None])
     for shot, recs, ids in per_shot:
         votes = {}
-        for (_, _, feats), tids in zip(recs, ids):
+        for (_, _, feats, _), tids in zip(recs, ids):
             for f, tid in zip(feats, tids):
                 if clear_kit(model_t, f):
                     votes.setdefault(int(tid), Counter())[clear_kit(model_t, f)] += 1
         team = {tid: v.most_common(1)[0][0] for tid, v in votes.items()}
         ball = [f for f in analysis["frames"] if f["shot"] == shot["id"] and f.get("ball")]
-        for (t, boxes, _), tids in zip(recs, ids):
+        for (t, boxes, _, kd), tids in zip(recs, ids):
             b = min(ball, key=lambda f: abs(f["t"] - t)) if ball else None
             frames.append({"t": round(t, 3), "shot": shot["id"], "calibration": {"ok": False},
                            "ball": b["ball"] if b and abs(b["t"] - t) < 0.06 else None,
                            "players": [{"track_id": CLOSEUP_ID_BASE + int(tid), "team": team.get(int(tid)), "role": "player",
-                                        "x": None, "y": None, "bbox": [round(float(v), 1) for v in box], "source": "closeup_pose"}
-                                       for box, tid in zip(boxes, tids)]})
+                                        "x": None, "y": None, "bbox": [round(float(v), 1) for v in box], "source": "closeup_pose",
+                                        "ankles": [[round(float(a[0]), 1), round(float(a[1]), 1), round(float(a[2]), 3)]
+                                                   for a in k[[K["lank"], K["rank"]]]]}
+                                       for box, tid, k in zip(boxes, tids, kd)]})
     return {"shots": analysis["shots"], "frames": frames, "kit_model": model_t,
             "teams": None if model_t is None else {k: {"color": c} for k, c in model_t.colours().items()}}
 
@@ -1377,6 +1392,10 @@ def run(args):
             kits = Path(args.video).parent / "team_model.json"
             clip_model = teams.TeamModel.from_json(json.loads(kits.read_text())) if kits.exists() else None
             synth = closeup_analysis(analysis, close, cap, fps, models.pose, dev, clip_model=clip_model)
+            # the close-up people, for var_cv.crossview (it calibrates the shot from their feet)
+            write_json(out.with_name("closeup.json"), {"frames": [
+                {"t": f["t"], "shot": f["shot"], "players": [{k: p[k] for k in ("track_id", "team", "bbox", "ankles")}
+                                                             for p in f["players"]]} for f in synth["frames"]]})
             c2, t2 = find_candidates(synth)
             result["candidates_found"] += t2
             work.append((synth, c2, "closeup_pose"))

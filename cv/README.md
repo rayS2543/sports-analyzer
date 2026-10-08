@@ -79,3 +79,21 @@ Calibration always needs painted-line evidence in the frame. Frames with genuine
 - **Frames inside dissolves or wipes:** excluded from every shot.
 - **Shots where no frame yields at least 4 landmarks,** even when pooled over neighbouring frames, so there is nothing to propagate from.
 - **Goal-end or low angles where the keypoint model mislabels landmarks** and the painted lines contradict every fit. These are rejected, not faked.
+
+## Cross-view calibration (replays from the live camera)
+
+Close-ups and replays rarely show enough paint to calibrate alone. `var_cv.crossview` solves the replay camera from the calibrated live shot of the same play:
+
+```bash
+.venv/bin/python -m var_cv.fouls --analysis ../var_data/ID/23.0-28.0/analysis.json --video ../var_data/ID/video.mp4 \
+    --out ../var_data/ID/23.0-28.0/fouls.json          # also writes closeup.json: pose people + ankles
+.venv/bin/python -m var_cv.crossview --replay ../var_data/ID/23.0-28.0 --live ../var_data/ID/1.0-7.0 \
+    --video ../var_data/ID/video.mp4 [--anchor 3.270:23.223] [--debug-dir DIR]
+```
+
+- **Model:** one camera panning, tilting and zooming about a fixed centre C (plus a prior-weighted principal-point offset), a per-frame rotation and focal length, and a time map `t_live = t_anchor + offset + s * (t_replay - t_anchor_replay)`.
+- **Fit:** robust least squares over the whole shot: replay feet against the live players' smoothed positions at the synced time, chamfer to visible paint, soft camera-motion residuals, priors. Speed and offset are parameters, so their uncertainty is in the covariance.
+- **Search:** anchors (paired foul incidents, or `--anchor`) seed identity pairs. For each seed and speed the feet are chained through the camera motion into one reference image; a grid of camera centres and then a hard-chained fit with the paint pick starting cameras; joint fits from the best few decide. Team + geometry assign the other players (unambiguous matches only).
+- **Acceptance:** fixed-centre check (motion homographies must be conjugate rotations, else "replay camera moves"); rank rule; p90 1-sigma ground error over the visible grass <= 1 m, where sigma = Gauss-Newton propagation + 1 px + the live calibration's own error + a profile floor from converged alternative fits; >= 2 matched players spanning >= 3 m (or 1 plus a non-parallel line family); leave-one-player-out within 2 sigma. A materially different speed within chi^2 + 4, a speed sigma above 0.033, or players that barely move = "sync ambiguous".
+- **Output:** `calibration.source = "cross_view"` with `cross_view` details, frame `live_t`, `shots[].playback_speed` / `replay_of`, close-up pose people as the shot's players, positions and smoothed velocities in real time (divided by s), ball 3D in real time, identities. `crossview.json` holds the report and the per-frame failures.
+- **Not implemented:** a per-frame fallback for a translating camera (it needs >= 4 identified players in every frame), and pass-event anchors for replays without foul incidents (use `--anchor`).

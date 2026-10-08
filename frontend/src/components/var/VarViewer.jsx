@@ -80,12 +80,29 @@ export const icon = { className: "w-4 h-4", viewBox: "0 0 16 16", fill: "current
 
 const STATUS_LABEL = { ok: "Calibrated", uncalibrated: "No calibration", "no-frame": "No tracked frame", outside: "Outside analysed window" };
 const PROPAGATED_NOTE = "Calibration carried over from a neighbouring frame in this shot, then re-checked against the painted lines.";
+const CROSS_VIEW_NOTE =
+  "Replay camera inferred from the live camera: the live shot's tracked players at the synced moment fix it, not this shot's own pitch lines.";
+
+// Timeline tick per analysed frame: uncalibrated faint, cross-view in accent, carried-over short, detected full.
+const tick = (c) =>
+  !c?.ok ? "h-2 bg-faint/30" : c.source === "cross_view" ? "h-2 bg-accent/60" : c.source === "propagated" ? "h-1 bg-muted/35" : "h-2 bg-muted/60";
+
+// "Replay ×0.4 · synced to live 0:03.3" for a frame calibrated from the live camera, else null.
+export function crossViewLabel(frame, shot) {
+  const c = frame?.calibration;
+  if (!c?.ok || c.source !== "cross_view") return null;
+  const speed = c.cross_view?.speed ?? shot?.playback_speed;
+  const parts = [Number.isFinite(speed) ? `Replay ×${Number(speed.toFixed(2))}` : "Replay"];
+  if (Number.isFinite(frame.live_t)) parts.push(`synced to live ${formatClock(frame.live_t)}`);
+  return parts.join(" · ");
+}
 
 function Timeline({ analysis, win, frames, time, playing, onSeek, onToggle, onStep, events, activeEventT, onEvent, sel, muted, onMute, videoOk }) {
   const span = win.end - win.start;
   const pct = (t) => `${((t - win.start) / span) * 100}%`;
   const shotIndex = sel.shot ? analysis.shots.findIndex((s) => s.id === sel.shot.id) : -1;
   const propagated = sel.status === "ok" && sel.frame?.calibration?.source === "propagated";
+  const crossView = sel.status === "ok" ? crossViewLabel(sel.frame, sel.shot) : null;
   const state = STATUS_LABEL[sel.status];
   const inside = sel.status !== "outside";
   return (
@@ -112,10 +129,15 @@ function Timeline({ analysis, win, frames, time, playing, onSeek, onToggle, onSt
               Shot {shotIndex + 1} of {analysis.shots.length}
             </span>
           )}
-          <span className={sel.status === "ok" ? "text-win" : "text-accent"} title={propagated ? PROPAGATED_NOTE : undefined}>
+          <span
+            className={sel.status === "ok" ? "text-win" : "text-accent"}
+            title={propagated ? PROPAGATED_NOTE : crossView ? CROSS_VIEW_NOTE : undefined}
+          >
             {state}
             {propagated && <span className="text-muted"> · carried over</span>}
+            {crossView && <span className="text-muted"> · from the live camera</span>}
           </span>
+          {crossView && <span className="font-mono tabular-nums text-accent">{crossView}</span>}
           {videoOk !== false && (
             <button type="button" onClick={onMute} className="pressable ml-1 rounded-md px-2 h-7 border border-line text-muted hover:text-fg">
               {muted ? "Sound off" : "Sound on"}
@@ -170,9 +192,7 @@ function Timeline({ analysis, win, frames, time, playing, onSeek, onToggle, onSt
           <span
             key={f.t}
             aria-hidden="true"
-            className={`absolute bottom-1 w-px ${
-              !f.calibration?.ok ? "h-2 bg-faint/30" : f.calibration.source === "propagated" ? "h-1 bg-muted/35" : "h-2 bg-muted/60"
-            }`}
+            className={`absolute bottom-1 w-px ${tick(f.calibration)}`}
             style={{ left: pct(f.t) }}
           />
         ))}
@@ -300,7 +320,7 @@ const TABS = [
   ["foul", "Foul / red card"],
 ];
 
-export default function VarViewer({ analysis, clipId, clipMeta, league, event }) {
+export default function VarViewer({ analysis, clipId, clipMeta, league, event, onReload }) {
   const videoRef = useRef(null);
   const reducedMotion = useReducedMotion();
   const duration = analysis.video.duration_seconds;
@@ -792,7 +812,7 @@ export default function VarViewer({ analysis, clipId, clipMeta, league, event })
             )}
             {tab === "foul" && (
               <Suspense fallback={<p className="text-sm text-muted">Loading foul review…</p>}>
-                <FoulReview clip={clipId} start={win.start} end={win.end} time={time} onSeek={seek} />
+                <FoulReview clip={clipId} start={win.start} end={win.end} time={time} onSeek={seek} onRecalibrated={onReload} />
               </Suspense>
             )}
           </div>

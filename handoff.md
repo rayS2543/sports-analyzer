@@ -51,7 +51,7 @@ Checks: `python -m pytest -q` (repo root, 151 backend), `cd cv && .venv/bin/pyth
 
 Deep links: `/var?league=PD&date=2025-09-21&event=748191&clip=46338651&start=1.0&end=6.0` (Barça–Getafe, offside); `/var?league=PD&date=2025-04-13&event=704966&clip=44656413&start=23.0&end=28.0` (Mbappé red card, Alavés–Real Madrid).
 
-## State (2026-09-28)
+## State (2026-09-28; see cross-view section below for 2026-10-08)
 
 Working end to end: ESPN discovery → preview → window analysis → one-click offside review with lines on the video and broadcast-matched 3D → manual check → foul/red-card panel → separate official record.
 
@@ -84,8 +84,22 @@ Foul review on Mbappé: see "Done since the last handoff" below. No false reds o
 7. **One contact via two tracks** (one body tracked twice in a close-up) is reported once (`fouls.dedupe`).
 8. **Browser pass (2026-10-01):** both deep links on desktop and at 390 px (no horizontal overflow). Combine angles works in the UI (Mbappé live + replays: inconclusive on every ground).
 
-## Open work
+## Cross-view calibration (2026-10-08, Amendment 4)
 
-1. Open the PR.
+Replays that can't calibrate alone are fitted from the calibrated live shot of the same play: `cv/var_cv/crossview.py` (fixed-centre PTZ camera; feet vs synced live positions, body height, paint chamfer, soft camera motion; joint sync speed s and offset; strict acceptance). Backend `POST/GET /var/analysis/<clip>/crossview` (one machine-wide heavy-job slot shared with analyze/fouls; runs crossview then fouls), combine `crossview_available` / `suggested_pairs`, `GET /var/angles`; FoulReview "Calibrate this replay from the live camera"; timeline cross-view marks. Replay speeds are divided by `shots[].playback_speed` everywhere (tracks, fouls, ball3d gravity).
+
+- Synthetic (s = 0.4, pan + zoom, one touchline visible): s 0.3994 ± 0.011, C 1.22 m off, ground p90 0.19 m, 100% within 2σ, 41/41 frames; negatives fail with `underdetermined` / `replay camera moves` / `sync ambiguous`.
+- **Real Mbappé replays: 0/42 (23.0-28.0) and 0/30 (27.0-31.0)** — honest failure "no consistent camera" (feet 3σ from live players). The replay camera is fixed-centre (0.08 px), so the model fits; the inputs don't: the **live tracks swap identities in the tangle** (Blanco 23→28→27, Güler 27→31→4, Mbappé = 24), so the live incident at 3.27 ("27→28") is probably not Mbappé on Blanco and the sync anchor is wrong. Overlays: `.claude/var-scratch/crossview/ov23`, `ov27`, `livecrops.jpg`. Pre-crossview analysis backups: `.claude/var-scratch/crossview/backup/`.
+- Pseudo-ground truth not run: the 46338651 66.4 s cut is live play (the calibrated shots never overlap in time). A real check needs a replay from a different camera that is itself detect-calibrated.
+
+## Open work — priority order
+
+1. **Live identity through tangles** (reid/track): stop track swaps when players overlap (appearance + motion gating, kit-change track breaks), then verify on 44656413 1.0-7.0 that the 3.2–3.4 s tangle keeps Mbappé/Blanco/Güler/Mouriño identities.
+2. **Close-up foul fixes** (`fouls.py`): challenger direction in tangles (23.19 / 23.223 read reversed), break close-up tracks on kit change (1005 Güler→Mouriño), mask the on-screen scoreboard graphic (1006).
+3. **Re-run crossview** 23.0-28.0 ← 1.0-7.0 (and 27.0-31.0), then fouls; report metric speed / contact height / DOGSO from the replay vs the official red (separate, never tuned).
+4. **Ground-truth test** for crossview: find a replay from a different camera that detect-calibrates on its own.
+5. Not implemented in crossview: per-frame fallback for translating cameras, pass-event anchors, appearance tie-breaks.
+
+Checks at this commit: backend 184, frontend 74 (lint + build clean), cv 52 (reported by the implementing agent, ~10 min run).
 
 Performance: a 5 s window takes ~40–90 s on the Air when it is the only job; foul review 20 s – 6 min per window.

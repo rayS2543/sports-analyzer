@@ -1,4 +1,4 @@
-import { configure, render, screen, within } from "@testing-library/react";
+import { configure, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -179,6 +179,32 @@ describe("VarPage", () => {
     await user.click(await screen.findByRole("button", { name: /0:12\.0–0:16\.2/ }));
     expect(await screen.findByTestId("pitch-scene")).toBeInTheDocument();
     expect(axios.post).not.toHaveBeenCalledWith(`${API}/var/analyze`, expect.anything());
+  });
+
+  it("marks replay frames calibrated from the live camera with their speed and synced live time", async () => {
+    // Shot 1 of the sample is uncalibrated; pretend crossview.py calibrated it as a x0.4 replay of shot 0.
+    const shot0 = sample.frames.find((f) => f.shot === 0 && f.calibration.ok);
+    const crossViewed = {
+      ...sample,
+      shots: sample.shots.map((s) => (s.id === 1 ? { ...s, calibrated_ratio: 1, usable: true, playback_speed: 0.4, replay_of: { clip: "46338651", window: "12.0-16.2", t_live_anchor: 13.0, t_replay_anchor: 15.0, speed: 0.4 } } : s)),
+      frames: sample.frames.map((f) =>
+        f.shot === 1
+          ? { ...f, live_t: 13 + 0.4 * (f.t - 15), calibration: { ok: true, source: "cross_view", homography: shot0.calibration.homography, reprojection_error_m: 0.6, cross_view: { speed: 0.4 } } }
+          : f,
+      ),
+    };
+    analysed = true;
+    const base = axios.get.getMockImplementation();
+    axios.get.mockImplementation((url, opts) =>
+      url === `${API}/var/analysis/46338651` ? Promise.resolve({ data: { status: "done", result: crossViewed } }) : base(url, opts),
+    );
+    renderAt(WINDOW_LINK);
+    await screen.findByRole("article");
+    fireEvent.change(screen.getByRole("slider", { name: "Clip time" }), { target: { value: "15" } });
+    expect(await screen.findByText("Replay ×0.4 · synced to live 0:13.0")).toBeInTheDocument();
+    expect(screen.getByText(/from the live camera/)).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("slider", { name: "Clip time" }), { target: { value: "13" } });
+    expect(screen.queryByText(/synced to live/)).not.toBeInTheDocument();
   });
 
   it("shows the backend's message when analysis can't start", async () => {

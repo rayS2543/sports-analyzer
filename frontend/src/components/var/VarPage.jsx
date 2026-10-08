@@ -419,6 +419,7 @@ export default function VarPage() {
           clipMeta={clipMeta}
           league={event ? league : null}
           event={event}
+          onReload={devFixture ? undefined : () => fetchStatus(`${clip}:${winKey}`, win).catch(() => {})}
         />
       )}
     </PageShell>

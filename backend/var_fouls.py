@@ -227,15 +227,19 @@ def _pick(readings):
                 + (f" Other angles disagree ({other})." if other else ""))
 
 
-def combine(parts):
-    """One incident seen from several windows (camera angles) of the same clip.
+def combine(parts, clips=None):
+    """One incident seen from several windows (camera angles) of the same event.
 
     parts: [(angle label, raw fouls.json incident)]. Each indicator and DOGSO factor comes from the angle
     that observed it most confidently (e.g. contact from a close-up replay, speed from the calibrated
-    live camera). Raises ValueError when the angles cannot be the same incident (opposite kits)."""
-    teams = {(p.get("players") or {}).get("challenger", {}).get("team") for _, p in parts} - {None}
-    if len(teams) > 1:
-        raise ValueError("The selected challenges have challengers from different teams, so they are not the same incident.")
+    live camera). Raises ValueError when the angles cannot be the same incident (opposite kits).
+    clips: each part's clip. Team letters are per-clip kit clusters, so challengers are compared only
+    within a clip."""
+    clips = clips or [None] * len(parts)
+    for clip in set(clips):
+        teams = {((p.get("players") or {}).get("challenger") or {}).get("team") for (_, p), c in zip(parts, clips) if c == clip} - {None}
+        if len(teams) > 1:
+            raise ValueError("The selected challenges have challengers from different teams, so they are not the same incident.")
     merged = {"indicators": {}, "dogso": {}}
     for field in merged:
         keys = {k for _, p in parts for k in (p.get(field) or {})}
@@ -248,6 +252,8 @@ def combine(parts):
     first = parts[0][1]
     out = assess_incident(dict(first, **merged, calibrated=any(p.get("calibrated") for _, p in parts)))
     out["angles"] = [{"angle": a, "t": p.get("t"), "id": p.get("id")} for a, p in parts]
+    if len(set(clips)) > 1:
+        out["notes"].append("Team letters come from each clip's own kit clustering, so challengers were only compared within a clip.")
     return out
 
 

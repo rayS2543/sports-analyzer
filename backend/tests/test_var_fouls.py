@@ -1,5 +1,5 @@
 import json
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -251,3 +251,122 @@ def test_combine_route(client, data):
     assert client.post(url, json={"parts": [{"start": 12, "end": 18, "id": 0}]}).status_code == 400
     assert client.post(url, json={"parts": [{"start": 12, "end": 18, "id": 0}, {"start": 12, "end": 18, "id": 0}]}).status_code == 400
     assert client.post(url, json={"parts": [{"start": 12, "end": 18, "id": 0}, {"start": 23, "end": 28, "id": 9}]}).status_code == 404
+
+
+# ---------- cross-view: which angle to calibrate, and which contacts are the same incident ----------
+
+LIVE, REPLAY = "1.0-7.0", "23.0-28.0"
+
+
+def contact(id_, t, team, shot=0):
+    return {**angle(team), "id": id_, "t": t, "shot": shot}
+
+
+def write_window(clip_dir, key, analysis, incidents):
+    (clip_dir / key).mkdir(parents=True, exist_ok=True)
+    (clip_dir / key / "analysis.json").write_text(json.dumps(analysis))
+    (clip_dir / key / "fouls.json").write_text(json.dumps({"incidents": incidents}))
+
+
+def frames(ts, **calibration):
+    return [{"t": t, "shot": 0, "calibration": dict(calibration)} for t in ts]
+
+
+def to_live(t):  # what the cross-view sync found: replay x0.4, contact 23.223 <-> live 3.27
+    return round(3.27 + 0.4 * (t - 23.223), 4)
+
+
+@pytest.fixture
+def angles(data):
+    clip = data.parent
+    write_window(clip, LIVE, {"shots": [{"id": 0}], "frames": frames([3.1, 3.2, 3.3], ok=True, source="detected")},
+                 [contact(2, 3.136, "B"), contact(3, 3.27, "A"), contact(4, 4.438, "B")])
+    write_window(clip, REPLAY, {"shots": [{"id": 0}], "frames": frames([23.2, 23.3, 23.4], ok=False)},
+                 [contact(0, 23.223, "A"), contact(1, 23.357, "B")])
+    return clip
+
+
+def synced(clip, window=LIVE):
+    """The replay window as crossview.py leaves it: cross-view frames with live_t and the shot's replay_of."""
+    analysis = {"shots": [{"id": 0, "playback_speed": 0.4, "replay_of": {"clip": "44656413", "window": window, "t_live_anchor": 3.27,
+                                                                          "t_replay_anchor": 23.223, "speed": 0.4}}],
+                "frames": [dict(f, live_t=to_live(f["t"])) for f in frames([23.2, 23.3, 23.4], ok=True, source="cross_view")]}
+    (clip / REPLAY / "analysis.json").write_text(json.dumps(analysis))
+
+
+COMBINE = "/var/fouls/44656413/combine"
+PAIR = {"parts": [{"start": 1, "end": 7, "id": 3}, {"start": 23, "end": 28, "id": 0}]}
+
+
+def test_combine_offers_crossview_for_an_uncalibrated_replay_with_a_calibrated_live_angle(client, angles):
+    for parts in (PAIR["parts"], PAIR["parts"][::-1]):
+        got = client.post(COMBINE, json={"parts": parts}).json
+        assert got["crossview_available"] is True and got["suggested_pairs"] == []
+        assert got["crossview_request"] == {"clip": "44656413", "start": 23.0, "end": 28.0,
+                                            "live": {"clip": "44656413", "start": 1.0, "end": 7.0}, "anchor": [3.27, 23.223]}
+    # A refused pairing (opposite kits) can still calibrate the replay, but not anchored on that pair.
+    refused = client.post(COMBINE, json={"parts": [{"start": 1, "end": 7, "id": 2}, {"start": 23, "end": 28, "id": 0}]})
+    assert refused.status_code == 409 and refused.json["crossview_available"] is True
+    assert "anchor" not in refused.json["crossview_request"] and refused.json["crossview_request"]["start"] == 23.0
+    write_window(angles, "12.0-18.0", {"shots": [{"id": 0}], "frames": frames([12.1], ok=True, source="propagated")}, [contact(0, 12.3, "A")])
+    got = client.post(COMBINE, json={"parts": [{"start": 1, "end": 7, "id": 3}, {"start": 12, "end": 18, "id": 0}]}).json
+    assert got["crossview_available"] is False and got["crossview_request"] is None
+
+
+@pytest.mark.parametrize("window", [LIVE, {"start": 1.0, "end": 7.0}])
+def test_suggested_pairs_follow_the_crossview_time_map(client, angles, window):
+    synced(angles, window)
+    expected = [
+        {"live": {"clip": "44656413", "start": 1.0, "end": 7.0, "id": 3, "t": 3.27},
+         "replay": {"clip": "44656413", "start": 23.0, "end": 28.0, "id": 0, "t": 23.223}, "dt_s": 0.0},
+        # 23.357 syncs to 3.324: the A challenger at 3.27 is nearer but the wrong kit, so the B one at 3.136.
+        {"live": {"clip": "44656413", "start": 1.0, "end": 7.0, "id": 2, "t": 3.136},
+         "replay": {"clip": "44656413", "start": 23.0, "end": 28.0, "id": 1, "t": 23.357}, "dt_s": round(3.136 - to_live(23.357), 3)},
+    ]
+    got = client.post(COMBINE, json=PAIR).json
+    assert got["suggested_pairs"] == expected
+    assert got["crossview_available"] is False  # the replay is calibrated now
+    assert client.get("/var/fouls/44656413?start=23&end=28").json["suggested_pairs"] == expected
+    assert client.get("/var/fouls/44656413?start=1&end=7").json["suggested_pairs"] == []
+    # A wrong pairing is refused, but the suggestions still point at the right one.
+    wrong = client.post(COMBINE, json={"parts": [{"start": 1, "end": 7, "id": 2}, {"start": 23, "end": 28, "id": 0}]})
+    assert wrong.status_code == 409 and wrong.json["suggested_pairs"] == expected
+
+
+def test_suggested_pairs_ignore_contacts_outside_the_tolerance_and_bad_maps(client, angles):
+    synced(angles)
+    analysis = json.loads((angles / REPLAY / "analysis.json").read_text())
+    analysis["frames"] = [dict(f, live_t=f["live_t"] + 2.0) for f in analysis["frames"]]  # sync 2 s off: nothing within tolerance
+    (angles / REPLAY / "analysis.json").write_text(json.dumps(analysis))
+    assert client.post(COMBINE, json=PAIR).json["suggested_pairs"] == []
+    synced(angles)
+    analysis = json.loads((angles / REPLAY / "analysis.json").read_text())
+    for window in ("../1.0-7.0", "1-7", {"start": 1, "end": 70}, None):
+        analysis["shots"][0]["replay_of"]["window"] = window
+        (angles / REPLAY / "analysis.json").write_text(json.dumps(analysis))
+        assert client.post(COMBINE, json=PAIR).json["suggested_pairs"] == []
+
+
+def test_combine_survives_a_contact_without_a_challenger(client, angles):
+    fouls = json.loads((angles / REPLAY / "fouls.json").read_text())
+    fouls["incidents"].append({"id": 7, "t": 24.4, "shot": 0, "players": {"challenger": None, "victim": None}, "indicators": {}, "dogso": {}})
+    (angles / REPLAY / "fouls.json").write_text(json.dumps(fouls))
+    assert client.post(COMBINE, json={"parts": [{"start": 1, "end": 7, "id": 3}, {"start": 23, "end": 28, "id": 7}]}).status_code == 200
+
+
+def test_combine_parts_from_another_clip_of_the_event(client, angles):
+    other = angles.parent / "44656500"
+    write_window(other, LIVE, {"shots": [{"id": 0}], "frames": frames([3.2], ok=True, source="detected")}, [contact(5, 3.3, "B")])
+    parts = [{"start": 23, "end": 28, "id": 0}, {"clip": "44656500", "start": 1, "end": 7, "id": 5}]
+    assert client.post(COMBINE, json={"parts": parts}).status_code == 400  # league + event needed across clips
+    assert client.post(COMBINE, json={"parts": [parts[0], {**parts[1], "clip": "../x"}]}).status_code == 400
+    summary = {"videos": [{"id": int(c), "headline": "x", "links": {"source": {"href": "https://espnmedia-cdn.akamaized.net/a.mp4"}}}
+                          for c in ("44656413", "44656500")]}
+    with patch("routes.var_clips.requests.get", return_value=Mock(json=lambda: summary, raise_for_status=lambda: None)):
+        got = client.post(COMBINE, json={"parts": parts, "league": "PD", "event": "704966"})
+        missing = client.post(COMBINE, json={"parts": [parts[0], {**parts[1], "clip": "999"}], "league": "PD", "event": "704966"})
+    # Team letters are per-clip kit clusters: A here and B there may be the same club, so no refusal across clips.
+    assert got.status_code == 200 and any("only compared within a clip" in n for n in got.json["notes"])
+    assert [a["angle"] for a in got.json["angles"]] == [REPLAY, "clip 44656500 1.0-7.0"]
+    assert got.json["crossview_request"]["live"] == {"clip": "44656500", "start": 1.0, "end": 7.0}
+    assert missing.status_code == 404

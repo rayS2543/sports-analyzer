@@ -305,7 +305,7 @@ def frame_json(rec, shot_id, pairs, role, team, score):
     H = cal["H"] if cal["ok"] else None
     sig = (lambda pts: cal["sigma"](pts)) if H is not None else None
     out = {"t": round(rec["t"], 3), "shot": shot_id, "calibration": calibration_json(cal, rec["masks"][0].shape),
-           "ball": None, "players": []}
+           "ball": None, "players": [], "live_t": None}  # live_t: synced live time, set by var_cv.crossview
     if rec["ball"]:
         x1, y1, x2, y2 = rec["ball"]["xyxy"]
         centre, bottom = ((x1 + x2) / 2, (y1 + y2) / 2), ((x1 + x2) / 2, y2)
@@ -424,7 +424,8 @@ def run(args):
         ratio = n_ok / len(srecs) if srecs else 0.0
         shot_list.append({"id": sid, "start": round((f0 + a) / fps, 3), "end": round((f0 + b) / fps, 3),
                           "calibrated_ratio": round(ratio, 3), "detected_ratio": round(n_detected / max(1, len(srecs)), 3),
-                          "usable": bool(ratio >= 0.5 and n_ok >= 2)})
+                          "usable": bool(ratio >= 0.5 and n_ok >= 2),
+                          "playback_speed": 1.0, "replay_of": None})  # var_cv.crossview sets these on replays
         if not srecs:
             continue
         for r in srecs:

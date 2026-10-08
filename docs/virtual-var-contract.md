@@ -189,3 +189,47 @@ Backend default port is now 5001 (macOS AirPlay owns 5000); frontend API_BASE de
    "verdict": "red|not_red|inconclusive", "indicators": [...], "reasons": [...]}], "sanction": "red|yellow|none|inconclusive"}]}`
   Penalty-area DOGSO with a genuine attempt to play the ball → yellow (Law 12 downgrade). Honest inconclusive.
 - Frontend: self-contained `frontend/src/components/var/FoulReview.jsx` (props: clip, start, end, time, onSeek), mounted in the viewer's "Foul / red card" tab next to the offside tool.
+
+## AMENDMENT 4 — cross-view calibration: replays calibrated from the live TV camera. Additive.
+A replay/close-up shot that cannot be calibrated alone is calibrated from a calibrated LIVE shot of the same play
+(same clip or another ESPN clip of the same event). Same acceptance bar as detected frames (p90 1-sigma position
+uncertainty ≤ 1 m over the visible grass, rank rule, plus a leave-one-player-out check); otherwise `ok: false` with a
+specific `failure` (`underdetermined`, `replay camera moves`, `sync ambiguous`, `too few matched players`, ...).
+
+### CV
+- `cv/var_cv/crossview.py` CLI (run from `cv/`):
+  `python -m var_cv.crossview --replay <clip window dir> --live <clip window dir> --video <replay clip video.mp4>
+   [--anchor LIVE_T:REPLAY_T]` — rewrites `<replay window>/analysis.json` atomically and writes
+  `<replay window>/crossview.json` (the report below). Anchors default to paired foul incidents when both
+  windows have `fouls.json`; otherwise pass/touch events; `--anchor` overrides.
+- `<window>/closeup.json` (written by `var_cv.fouls`): the close-up pose people per sampled frame
+  `{"frames": [{"t", "shot", "players": [{"track_id", "team", "bbox", "ankles": [[u, v, conf], [u, v, conf]] | null}]}]}`.
+- Frame `calibration` on cross-view frames: `source: "cross_view"`, `homography` (pitch→image as always),
+  `reprojection_error_m` (p90 sigma), plus
+  `cross_view: {"live": {"clip", "window", "shot"}, "speed", "offset_s", "sync_sigma_s", "camera_centre": [x, y, h],
+  "matched": [{"replay_track", "live_gid", "team", "frames"}], "point_residual_px", "fixed_centre_residual_px"}`.
+- Frame `live_t`: the synced live time of that replay frame (null when not synced).
+- `shots[]` gain `playback_speed` (1.0 for live; s < 1 for slow-motion replays) and
+  `replay_of: {"clip", "window", "t_live_anchor", "t_replay_anchor", "speed"} | null`.
+- Speeds: any velocity measured on a replay shot is divided by `playback_speed` (v_live = v_replay / s) — in
+  `temporal.smooth_tracks` (`vx`, `vy`) and in `var_cv.fouls` (challenger speed).
+- `crossview.json`: `{"status": "done|failed", "failure": str|null, "replay_shot", "live": {...}, "speed",
+  "offset_s", "calibrated_frames", "frames", "matched", "camera_centre", "fixed_centre_residual_px", "notes": [...]}`.
+
+### Backend
+- `POST /var/analysis/<clip>/crossview` body `{"start", "end", "live": {"clip"?, "start", "end"}, "anchor"?: [live_t, replay_t]}`
+  → 202 job (same subprocess pattern and single heavy-job lock as `/var/analyze`); runs crossview then re-runs fouls
+  for the replay window. `GET /var/analysis/<clip>/crossview?start&end` → `{"status": "none|running|done|failed",
+  "progress", "error", "report": <crossview.json>|null}`.
+- `/var/windows/<clip>` entries gain `cross_view: "none|running|done|failed"`.
+- `POST /var/fouls/<clip>/combine` responses gain `crossview_available: bool` (an uncalibrated replay part plus a
+  calibrated live part) and, once a time map exists, `suggested_pairs: [{"live": {start,end,id}, "replay": {start,end,id}, "dt_s"}]`.
+- `GET /var/angles?league&event&clip` → `{"clips": [{"id", "title", "duration_seconds", "reason"}]}`: other ESPN clips of
+  the same event that mention the incident's players (from the official key events). combine/crossview parts may carry
+  `clip` to reference another clip of the same event.
+
+### Frontend
+- FoulReview: "Calibrate this replay from the live camera" when `crossview_available`, with job status; suggested angle
+  pairs shown first in "Same incident from another angle".
+- VarViewer timeline marks `cross_view` frames (like `propagated`), with a label "Replay ×{speed} · synced to live {live_t}".
+  VideoOverlay already draws on any frame with a homography.

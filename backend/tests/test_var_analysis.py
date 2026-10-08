@@ -106,9 +106,10 @@ def test_windows_lists_prior_analyses(client, env):
     (clip / "5.0-6.0").mkdir()  # empty: never started
     (clip / "12-17").mkdir()  # not a canonical key
     (clip / "video.mp4").write_bytes(b"")
+    (clip / "12.0-17.0" / "crossview.json").write_text(json.dumps({"status": "failed", "failure": "sync ambiguous"}))
     assert client.get("/var/windows/46338651").json["windows"] == [
-        {"start": 12.0, "end": 17.0, "key": "12.0-17.0", "status": "done"},
-        {"start": 30.5, "end": 33.0, "key": "30.5-33.0", "status": "failed"}]
+        {"start": 12.0, "end": 17.0, "key": "12.0-17.0", "status": "done", "cross_view": "failed"},
+        {"start": 30.5, "end": 33.0, "key": "30.5-33.0", "status": "failed", "cross_view": "none"}]
 
 
 @pytest.mark.parametrize("window", [(5, 5), (6, 5), (-1, 3), (0, 10.1), (0, "../x"), ("nan", 3), (0, "inf"), (True, 3), (None, 3)])

@@ -480,8 +480,9 @@ def apply(analysis):
     for f in analysis["frames"]:
         by_shot.setdefault(f.get("shot"), []).append(f)
     summary = {}
+    speeds = {s["id"]: float(s.get("playback_speed") or 1.0) for s in analysis.get("shots") or []}
     for shot, frames in by_shot.items():
-        info = _apply_shot(sorted(frames, key=lambda f: f["t"]), W, Hh)
+        info = _apply_shot(sorted(frames, key=lambda f: f["t"]), W, Hh, speeds.get(shot, 1.0))
         if info:
             summary[str(shot)] = info
     analysis["ball3d"] = {"shots": summary, "gravity": G, "ball_radius_m": BALL_R, "detection_sigma_px": SIGMA_DET_PX}
@@ -513,7 +514,8 @@ def _radius_scale(segs, obs):
     return float(np.median(ratios)) if len(ratios) >= MIN_OBS else None
 
 
-def _apply_shot(frames, W, Hh):
+def _apply_shot(frames, W, Hh, speed=1.0):
+    """speed: the shot's playback speed (slow-motion replay < 1). Physics runs in real time, t_real = t * speed."""
     rows = _observations(frames, W, Hh)
     if not rows:
         return None
@@ -527,7 +529,7 @@ def _apply_shot(frames, W, Hh):
         return None
     Ps = np.array([projection(H, C) for _, H, *_ in rows])
     fs = np.array([_focal_scale(P, W, Hh) for P in Ps])
-    obs = {"t": np.array([r[0]["t"] for r in rows], float), "P": Ps, "u": np.array([r[3] for r in rows], float),
+    obs = {"t": np.array([r[0]["t"] * speed for r in rows], float), "P": Ps, "u": np.array([r[3] for r in rows], float),
            "off": np.array([r[4] for r in rows]), "r_box": np.array([r[5] for r in rows], float),
            "f": fs[:, 0], "s": fs[:, 1]}
     obs["sig"] = np.array([np.hypot(SIGMA_DET_PX, _cal_px(r[0], r[1], r[3])) for r in rows])
@@ -570,5 +572,5 @@ def _apply_shot(frames, W, Hh):
                      airborne=bool(fit["model"] == "ballistic" and h[k] > 0.05),
                      height_uncertainty_m=None if s is None else round(s, 2), height_model=fit["model"])
     return {"camera_m": [round(float(v), 2) for v in C], "box_radius_scale": None if kappa is None else round(kappa, 3),
-            "segments": [{"model": fit["model"], "t0": float(obs["t"][idx[0]]), "t1": float(obs["t"][idx[-1]])}
+            "segments": [{"model": fit["model"], "t0": float(obs["t"][idx[0]] / speed), "t1": float(obs["t"][idx[-1]] / speed)}
                          for fit, idx in segs if fit is not None]}

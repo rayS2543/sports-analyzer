@@ -19,6 +19,93 @@ const VALUE_LABEL = { towards_goal: "Towards goal", away_from_goal: "Away from g
 const RELY = 0.6;
 
 const apiError = (err, fallback) => err?.response?.data?.error || fallback;
+const SAME_T = 0.3; // s: the same contact found again after a re-run of the foul review
+
+// "1.0-7.0" or {start, end} → "0:01.0–0:07.0".
+function windowLabel(w) {
+  const [a, b] = typeof w === "string" ? w.split("-").map(Number) : [w?.start, w?.end];
+  return Number.isFinite(a) && Number.isFinite(b) ? `${formatClock(a)}–${formatClock(b)}` : null;
+}
+const speedLabel = (s) => (Number.isFinite(s) ? `×${Number(s.toFixed(2))}` : "");
+const nearest = (items, t, of = (x) => x.t) =>
+  items.filter((x) => Math.abs(of(x) - t) <= SAME_T).sort((a, b) => Math.abs(of(a) - t) - Math.abs(of(b) - t))[0] ?? null;
+
+function ProgressBar({ label, value }) {
+  return (
+    <div
+      role="progressbar"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Number.isFinite(value) ? Math.round(value * 100) : undefined}
+      className="h-1.5 rounded-full bg-line overflow-hidden"
+    >
+      <div className="h-full bg-accent transition-[width] duration-500 ease-out" style={{ width: `${Math.round((value || 0.02) * 100)}%` }} />
+    </div>
+  );
+}
+
+/** The cross-view job of a replay window: running, honestly failed, or done (with what it rests on). */
+function CrossViewStatus({ xv, current }) {
+  if (!xv || xv.status === "none") return null;
+  if (xv.status === "error")
+    return (
+      <p role="alert" className="text-sm text-loss">
+        {xv.error}
+      </p>
+    );
+  const where = current ? "this replay" : `the replay ${formatClock(xv.start)}–${formatClock(xv.end)}`;
+  const r = xv.report || {};
+  if (xv.status === "running")
+    return (
+      <div className="rounded-xl border border-line bg-surface p-4 flex flex-col gap-2" aria-live="polite">
+        <p className="text-sm text-muted">
+          Calibrating {where} from the live camera: {xv.progress?.message || "starting…"}
+        </p>
+        <ProgressBar label="Cross-view calibration progress" value={xv.progress?.progress} />
+      </div>
+    );
+  if (xv.status === "failed")
+    return (
+      <p className="rounded-xl border border-line bg-surface px-4 py-3 text-sm text-muted">
+        Couldn&rsquo;t calibrate {where} from the live camera: {xv.error}. Its positions stay unmeasured rather than guessed.
+      </p>
+    );
+  const live = windowLabel(r.live?.window);
+  const frames = Number.isFinite(r.calibrated_frames) && Number.isFinite(r.frames) ? ` · ${r.calibrated_frames}/${r.frames} frames calibrated` : "";
+  return (
+    <p className="rounded-xl border border-accent/30 bg-accent/5 px-4 py-3 text-sm text-muted">
+      Positions in {where} are inferred from the live camera{live ? ` (${live})` : ""}, synced {speedLabel(r.speed)}
+      {frames}. They come from the live shot&rsquo;s tracked players, not from the replay&rsquo;s own pitch lines.
+    </p>
+  );
+}
+
+/** Offered when the combined angles are an uncalibrated replay plus a calibrated live shot. */
+function CalibrateOffer({ req, busy, onCalibrate }) {
+  const [liveT, replayT] = req.anchor || [];
+  return (
+    <div className="rounded-lg border border-line bg-canvas/40 p-3 flex flex-col gap-2">
+      <p className="text-sm text-muted">
+        The replay ({windowLabel(req)}) has no calibrated frame, so distances, speeds and DOGSO can&rsquo;t be measured from it. Its
+        camera can be inferred from the calibrated live camera ({windowLabel(req.live)})
+        {req.anchor
+          ? `, synced on these two contacts (${formatClock(liveT)} live, ${formatClock(replayT)} replay)`
+          : ", synced automatically on contacts both reviews found (not on this pair)"}
+        . Then the
+        replay&rsquo;s challenges are reviewed again. Takes several minutes.
+      </p>
+      <button
+        type="button"
+        onClick={onCalibrate}
+        disabled={busy}
+        className="pressable self-start rounded-lg bg-accent text-accent-fg px-3 h-9 text-sm font-medium disabled:opacity-60"
+      >
+        Calibrate this replay from the live camera
+      </button>
+    </div>
+  );
+}
 
 function formatValue(ind) {
   if (!ind.observable || ind.value == null) return "Not observable";
@@ -131,19 +218,34 @@ function playersOf(inc) {
 
 /** Same incident from another reviewed window (e.g. a close-up replay): each piece of evidence is
  * taken from the angle that saw it best; the backend refuses contradictory or opposite-kit pairs. */
-function CombineAngles({ clip, start, end, inc, others }) {
+function CombineAngles({ clip, start, end, inc, others, suggested = [], autoPartner, onAutoDone, xvBusy, onCalibrate }) {
   const [result, setResult] = useState(null);
+  const [offer, setOffer] = useState(null); // cross-view job body, also on a refused pairing (then unanchored)
+  const [after, setAfter] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
-  const options = others.flatMap((w) => w.incidents.map((o) => ({ w, o, value: `${w.key}|${o.id}` })));
-  if (!options.length) return null;
+  const [chosen, setChosen] = useState("");
+  // Pairs the cross-view time map matched to this challenge: offered first.
+  const isThis = (p) => p.clip === clip && p.start === start && p.end === end && p.id === inc.id;
+  const partners = suggested.flatMap((s) => (isThis(s.replay) ? [[s.live, s]] : isThis(s.live) ? [[s.replay, s]] : []));
+  const options = others.flatMap((w) =>
+    w.incidents.map((o) => ({
+      w,
+      o,
+      value: `${w.key}|${o.id}`,
+      pair: partners.find(([p]) => p.clip === clip && p.start === w.start && p.end === w.end && p.id === o.id)?.[1],
+    })),
+  );
 
   const pick = async (value) => {
+    setChosen(value);
     setResult(null);
+    setOffer(null);
     setError(null);
     const choice = options.find((opt) => opt.value === value);
     if (!choice) return;
     setBusy(true);
+    setAfter({ incT: inc.t, partner: { start: choice.w.start, end: choice.w.end, t: choice.o.t } });
     try {
       const res = await axios.post(`${API_BASE}/var/fouls/${clip}/combine`, {
         parts: [
@@ -152,12 +254,43 @@ function CombineAngles({ clip, start, end, inc, others }) {
         ],
       });
       setResult(res.data);
+      setOffer(res.data?.crossview_available ? res.data.crossview_request : null);
     } catch (err) {
       setError(apiError(err, "Could not combine the angles."));
+      const body = err?.response?.data;
+      setOffer(body?.crossview_available ? body.crossview_request : null);
     } finally {
       setBusy(false);
     }
   };
+
+  // After a cross-view job the reviews were re-run (ids may change): combine the same pair again, found by time.
+  const optionsKey = options.map((o) => o.value).join();
+  useEffect(() => {
+    if (!autoPartner) return;
+    const near = nearest(
+      options.filter(({ w }) => w.start === autoPartner.start && w.end === autoPartner.end),
+      autoPartner.t,
+      (opt) => opt.o.t,
+    );
+    if (near) {
+      onAutoDone?.();
+      pick(near.value);
+    }
+  }, [autoPartner, optionsKey]);
+
+  if (!options.length) return null;
+  const label = ({ w, o, pair }) =>
+    `${formatClock(w.start)}–${formatClock(w.end)} · ${formatClock(o.t)} · ${playersOf(o) || "players not identified"}` +
+    (pair ? ` · synced, ${Math.abs(pair.dt_s).toFixed(2)} s apart` : "");
+  const first = options.filter((opt) => opt.pair);
+  const rest = options.filter((opt) => !opt.pair);
+  const list = (opts) =>
+    opts.map((opt) => (
+      <option key={opt.value} value={opt.value}>
+        {label(opt)}
+      </option>
+    ));
 
   const id = `foul-${inc.id}-combined`;
   return (
@@ -165,17 +298,20 @@ function CombineAngles({ clip, start, end, inc, others }) {
       <label className="flex flex-wrap items-center gap-2 text-sm text-muted">
         Same incident from another angle
         <select
-          defaultValue=""
+          value={chosen}
           disabled={busy}
           onChange={(e) => pick(e.target.value)}
           className="min-w-0 max-w-full rounded-lg border border-line bg-surface px-2 h-9 text-sm text-fg"
         >
           <option value="">Choose a reviewed challenge…</option>
-          {options.map(({ w, o, value }) => (
-            <option key={value} value={value}>
-              {formatClock(w.start)}–{formatClock(w.end)} · {formatClock(o.t)} · {playersOf(o) || "players not identified"}
-            </option>
-          ))}
+          {first.length ? (
+            <>
+              <optgroup label="Matched by the cross-view sync">{list(first)}</optgroup>
+              <optgroup label="Other reviewed challenges">{list(rest)}</optgroup>
+            </>
+          ) : (
+            list(rest)
+          )}
         </select>
       </label>
       {error && (
@@ -183,6 +319,7 @@ function CombineAngles({ clip, start, end, inc, others }) {
           {error}
         </p>
       )}
+      {offer && <CalibrateOffer req={offer} busy={xvBusy} onCalibrate={() => onCalibrate(offer, offer.anchor ? after : null)} />}
       {result && (
         <section aria-label="Combined angles" className="flex flex-col gap-3">
           <div className="flex flex-wrap items-baseline gap-3">
@@ -244,7 +381,7 @@ function Incident({ inc, open, active, onSelect, combine }) {
  * Law 12 sending-off review of an analysed window. The system's own assessment only; the official
  * decision lives in OfficialRecord and is never read here.
  */
-export default function FoulReview({ clip, start, end, time, onSeek, pollMs = 1500 }) {
+export default function FoulReview({ clip, start, end, time, onSeek, onRecalibrated, pollMs = 1500 }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -268,6 +405,7 @@ export default function FoulReview({ clip, start, end, time, onSeek, pollMs = 15
 
   // Other windows of this clip whose foul review is done: candidate angles of the same incident.
   const [others, setOthers] = useState([]);
+  const [othersVersion, setOthersVersion] = useState(0);
   const done = data?.status === "done";
   useEffect(() => {
     if (!done) return undefined;
@@ -280,7 +418,11 @@ export default function FoulReview({ clip, start, end, time, onSeek, pollMs = 15
           wins.map((w) =>
             axios
               .get(`${API_BASE}/var/fouls/${clip}`, { params: { start: w.start, end: w.end } })
-              .then((r) => (r.data?.status === "done" && r.data.incidents?.length ? { ...w, incidents: r.data.incidents } : null))
+              .then((r) =>
+                r.data?.status === "done" && r.data.incidents?.length
+                  ? { ...w, incidents: r.data.incidents, suggested: r.data.suggested_pairs || [] }
+                  : null,
+              )
               .catch(() => null),
           ),
         );
@@ -292,7 +434,64 @@ export default function FoulReview({ clip, start, end, time, onSeek, pollMs = 15
     return () => {
       alive = false;
     };
-  }, [done, clip, start, end]);
+  }, [done, clip, start, end, othersVersion]);
+
+  // Cross-view calibration of a replay window (this one, or one combined with it), and its job status.
+  const [xv, setXv] = useState(null);
+  const [rePair, setRePair] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    setXv(null);
+    axios
+      .get(`${API_BASE}/var/analysis/${clip}/crossview`, { params: { start, end } })
+      .then((res) => alive && res.data?.status && setXv({ clip, start, end, ...res.data }))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [clip, start, end]);
+
+  // The job re-ran the replay's foul review: reload both sides, then combine the same pair again.
+  const settle = async (job) => {
+    const here = job.clip === clip && job.start === start && job.end === end;
+    if (here && job.status === "done") onRecalibrated?.();
+    await load();
+    setOthers([]);
+    setOthersVersion((v) => v + 1);
+    if (job.status === "done" && job.after) setRePair(job.after);
+  };
+
+  useEffect(() => {
+    if (xv?.status !== "running") return undefined;
+    const id = setTimeout(async () => {
+      try {
+        const res = await axios.get(`${API_BASE}/var/analysis/${xv.clip}/crossview`, { params: { start: xv.start, end: xv.end } });
+        const next = { ...xv, ...res.data };
+        setXv(next);
+        if (next.status !== "running") settle(next);
+      } catch {
+        setXv((x) => ({ ...x })); // poll again
+      }
+    }, pollMs);
+    return () => clearTimeout(id);
+  }, [xv, pollMs]);
+
+  const calibrate = async (req, after) => {
+    const job = { clip: req.clip, start: req.start, end: req.end, after };
+    setXv({ ...job, status: "running", progress: null });
+    try {
+      await axios.post(`${API_BASE}/var/analysis/${req.clip}/crossview`, { start: req.start, end: req.end, live: req.live, anchor: req.anchor });
+    } catch (err) {
+      setXv({ ...job, status: "error", error: apiError(err, "Could not start the cross-view calibration.") });
+    }
+  };
+
+  // Reopen the re-reviewed challenge (found by time: ids can change) so it re-combines with its partner.
+  const rePairId = rePair && data?.incidents ? nearest(data.incidents, rePair.incT)?.id : undefined;
+  useEffect(() => {
+    if (rePairId != null) setOpenId(rePairId);
+  }, [rePairId]);
+  const suggested = [...(data?.suggested_pairs || []), ...others.flatMap((w) => w.suggested || [])];
 
   const running = data?.status === "running" || data?.status === "queued";
   useEffect(() => {
@@ -320,7 +519,6 @@ export default function FoulReview({ clip, start, end, time, onSeek, pollMs = 15
     onSeek?.(inc.t);
   };
 
-  const progress = data?.progress?.progress;
   return (
     <section aria-labelledby="foul-review-heading" className="flex flex-col gap-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -337,6 +535,8 @@ export default function FoulReview({ clip, start, end, time, onSeek, pollMs = 15
           {error}
         </p>
       )}
+
+      <CrossViewStatus xv={xv} current={xv?.clip === clip && xv?.start === start && xv?.end === end} />
 
       {!data && !error && (
         <div className="flex flex-col gap-2.5" aria-busy="true" aria-label="Loading foul review">
@@ -370,16 +570,7 @@ export default function FoulReview({ clip, start, end, time, onSeek, pollMs = 15
       {running && (
         <div className="rounded-xl border border-line bg-surface p-4 flex flex-col gap-2" aria-live="polite">
           <p className="text-sm text-muted">{data.progress?.message || "Starting the foul review…"}</p>
-          <div
-            role="progressbar"
-            aria-label="Foul review progress"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={Number.isFinite(progress) ? Math.round(progress * 100) : undefined}
-            className="h-1.5 rounded-full bg-line overflow-hidden"
-          >
-            <div className="h-full bg-accent transition-[width] duration-500 ease-out" style={{ width: `${Math.round((progress || 0.02) * 100)}%` }} />
-          </div>
+          <ProgressBar label="Foul review progress" value={data.progress?.progress} />
         </div>
       )}
 
@@ -395,7 +586,21 @@ export default function FoulReview({ clip, start, end, time, onSeek, pollMs = 15
                   open={openId === inc.id}
                   active={Number.isFinite(time) && Math.abs(time - inc.t) < 0.15}
                   onSelect={() => select(inc)}
-                  combine={others.length ? { clip, start, end, others } : null}
+                  combine={
+                    others.length
+                      ? {
+                          clip,
+                          start,
+                          end,
+                          others,
+                          suggested,
+                          autoPartner: inc.id === rePairId ? rePair.partner : null,
+                          onAutoDone: () => setRePair(null),
+                          xvBusy: xv?.status === "running",
+                          onCalibrate: calibrate,
+                        }
+                      : null
+                  }
                 />
               ))}
             </ol>

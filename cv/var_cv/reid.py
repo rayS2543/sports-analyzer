@@ -243,7 +243,7 @@ def _swap_frame(frames, a, b, k0, k1):
     return min(range(k0, k1 + 2), key=rough)
 
 
-def _resmooth(frames, tids):
+def _resmooth(frames, tids, speed=1.0):
     """Majority team/role and smoothing of repaired tracks (they had been computed over two people)."""
     for tid in tids:
         ps = [p for f in frames for p in f["players"] if p["track_id"] == tid]
@@ -265,7 +265,7 @@ def _resmooth(frames, tids):
             for p in f["players"]:
                 if "raw_x" in p:
                     p["x"], p["y"] = p["raw_x"], p["raw_y"]
-        temporal.smooth_tracks(frames)
+        temporal.smooth_tracks(frames, playback_speed=speed)
 
 
 # ------------------------------------------------------------------ global ids
@@ -427,7 +427,8 @@ def apply(analysis, video_path):
         loc_clean = {(j, i) for j, k in enumerate(ks) for i in range(len(frames_all[k]["players"])) if (k, i) in clean}
         fixed = fix_swaps(frames, loc, loc_clean, sigma)
         if fixed:
-            _resmooth(frames, {x for _, a, b in fixed for x in (a, b)})
+            speed = next((sh.get("playback_speed") or 1.0 for sh in analysis.get("shots") or [] if sh["id"] == s), 1.0)
+            _resmooth(frames, {x for _, a, b in fixed for x in (a, b)}, speed)
             report["swaps_fixed"] += [{"shot": s, "t": t, "track_ids": [a, b]} for t, a, b in fixed]
         units = [_unit(ch) for ch in _chain(_tracklets(frames, loc, loc_clean, s), sigma)]
         assigned = {}

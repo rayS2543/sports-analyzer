@@ -23,6 +23,14 @@ def isolated_cache():
     cache.clear()
 
 
+@pytest.fixture(autouse=True)
+def idle_cv_jobs(monkeypatch):
+    """Heavy CV jobs share one machine-wide slot; a job left 'running' by one test must not block the next."""
+    from routes import var_analysis, var_fouls
+    for module, name in ((var_analysis, "_job"), (var_analysis, "_crossview"), (var_fouls, "_job")):
+        monkeypatch.setattr(module, name, None)
+
+
 @pytest.fixture
 def app():
     flask_app.config.update({"TESTING": True})

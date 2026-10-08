@@ -118,13 +118,17 @@ def pool_keypoints(recs, radius=6):
     return fixed
 
 
-def smooth_tracks(frames, window_s=0.35, max_speed=12.0):
+def smooth_tracks(frames, window_s=0.35, max_speed=12.0, playback_speed=1.0):
     """Smooth x/y per track within one shot (local weighted quadratic), keep raw_x/raw_y, add vx/vy.
 
     frames: frame dicts of one shot (time order) whose players carry raw x/y (None when
     uncalibrated). Velocity needs >= 3 observations spanning >= 0.2 s; implausible speeds
     (> max_speed m/s, i.e. tracking glitches) are reported as null. Mutates the dicts.
+    playback_speed: a slow-motion replay (< 1) runs shot time slower than real time, so windows
+    are in real seconds (window_s / s of shot time) and velocities are v_shot / s (m/s, real time).
     """
+    s = float(playback_speed or 1.0)
+    window_s = window_s / s
     obs = {}
     for f in frames:
         for p in f["players"]:
@@ -144,8 +148,8 @@ def smooth_tracks(frames, window_s=0.35, max_speed=12.0):
             cx = np.polyfit(tt, pp[:, 0], deg, w=np.sqrt(wts))
             cy = np.polyfit(tt, pp[:, 1], deg, w=np.sqrt(wts))
             p["x"], p["y"] = round(float(np.polyval(cx, 0)), 2), round(float(np.polyval(cy, 0)), 2)
-            if len(tt) >= 3 and np.ptp(tt) >= 0.2:
-                vx, vy = float(cx[-2]), float(cy[-2])  # derivative at t0 = linear coefficient
+            if len(tt) >= 3 and np.ptp(tt) * s >= 0.2:
+                vx, vy = float(cx[-2]) / s, float(cy[-2]) / s  # derivative at t0 = linear coefficient
                 if np.hypot(vx, vy) <= max_speed:
                     p["vx"], p["vy"] = round(vx, 2), round(vy, 2)
 
@@ -154,7 +158,7 @@ POSSESSION_M = 1.5  # ball within this distance of a player's feet = that player
 MIN_PASS_M, MIN_PASS_SPEED, MAX_BALL_SPEED = 5.0, 4.0, 40.0
 
 
-def _ball_track(frames):
+def _ball_track(frames, sp=1.0):
     """[(frame, (x, y))] of plausible ball ground positions; drops isolated jumps (> MAX_BALL_SPEED)."""
     pts = [(f, np.array([f["ball"]["x"], f["ball"]["y"]])) for f in frames
            if f["calibration"]["ok"] and f.get("ball") and f["ball"].get("x") is not None
@@ -162,7 +166,7 @@ def _ball_track(frames):
     keep = []
     for i, (f, p) in enumerate(pts):
         nbrs = [pts[j] for j in (i - 1, i + 1) if 0 <= j < len(pts)]
-        speeds = [np.linalg.norm(p - q) / max(abs(f["t"] - g["t"]), 1e-3) for g, q in nbrs]
+        speeds = [np.linalg.norm(p - q) / max(abs(f["t"] - g["t"]) * sp, 1e-3) for g, q in nbrs]
         if speeds and min(speeds) > MAX_BALL_SPEED:
             continue
         keep.append((f, p))
@@ -181,17 +185,19 @@ def _owner(frame, ball):
     return (p, d1, d2) if d1 <= POSSESSION_M else None
 
 
-def detect_passes(frames, max_flight_s=4.0):
+def detect_passes(frames, max_flight_s=4.0, speeds=None):
     """Candidate pass moments: player P controls the ball, the ball then travels >= MIN_PASS_M at
     >= MIN_PASS_SPEED to another player Q (or clearly away from P). t = last sampled frame P had
     the ball. Conservative: needs calibrated frames and a tracked ground ball; confidence reflects
-    possession clarity, ball detection, calibration source and whether a receiver was found."""
+    possession clarity, ball detection, calibration source and whether a receiver was found.
+    speeds: {shot id: playback speed}; slow-motion shot seconds are converted to real seconds."""
     events = []
     by_shot = {}
     for f in frames:
         by_shot.setdefault(f["shot"], []).append(f)
-    for shot_frames in by_shot.values():
-        track = _ball_track(sorted(shot_frames, key=lambda f: f["t"]))
+    for shot_id, shot_frames in by_shot.items():
+        sp = float((speeds or {}).get(shot_id) or 1.0)
+        track = _ball_track(sorted(shot_frames, key=lambda f: f["t"]), sp)
         owned = []  # (frame, ball xy, owner player, d1, d2)
         for f, b in track:
             o = _owner(f, b)
@@ -210,7 +216,7 @@ def detect_passes(frames, max_flight_s=4.0):
             receiver, recv_idx = None, None
             if nxt and nxt[0] == tid:
                 continue  # same player again: a dribble, not a pass
-            if nxt and owned[nxt[1]][0]["t"] - f_rel["t"] <= max_flight_s:
+            if nxt and (owned[nxt[1]][0]["t"] - f_rel["t"]) * sp <= max_flight_s:
                 recv_idx = nxt[1]
                 receiver = owned[recv_idx][2]
             end_idx = recv_idx if recv_idx is not None else min(len(owned) - 1, z + 10)
@@ -218,7 +224,7 @@ def detect_passes(frames, max_flight_s=4.0):
                 continue
             f_end, b_end = owned[end_idx][0], owned[end_idx][1]
             dist = float(np.linalg.norm(b_end - b_rel))
-            dt = f_end["t"] - f_rel["t"]
+            dt = (f_end["t"] - f_rel["t"]) * sp
             speed = dist / max(dt, 1e-3)
             if dist < MIN_PASS_M or not MIN_PASS_SPEED <= speed <= MAX_BALL_SPEED:
                 continue
