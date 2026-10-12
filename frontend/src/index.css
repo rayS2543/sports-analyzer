@@ -64,6 +64,14 @@
     transform: scale(0.97);
   }
 
+  /* VAR: hatched fill marks time with no calibrated view (never faked). */
+  .var-hatch {
+    background: repeating-linear-gradient(135deg, rgb(var(--line) / 0.7) 0 1.5px, transparent 1.5px 7px), rgb(var(--surface));
+  }
+  .var-hatch-strong {
+    background: repeating-linear-gradient(135deg, rgb(var(--line) / 0.6) 0 2px, rgb(var(--canvas) / 0.9) 2px 10px);
+  }
+
   .skeleton {
     @apply rounded bg-raised;
     animation: skeleton-pulse 1.4s ease-in-out infinite;

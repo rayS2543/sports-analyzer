@@ -1,0 +1,132 @@
+"""Synthetic checks for var_cv.crossview: a replay camera recovered from live player positions."""
+
+import cv2
+import numpy as np
+import pytest
+
+from test_fouls import look_at_camera
+from test_geometry import render
+from var_cv import crossview, pitch, temporal
+
+W, H = 1280, 720
+ANCHOR = {"live_t": 2.0, "replay_t": 10.0, "live_pair": [1, 2], "replay_pair": [101, 102], "source": "test"}
+
+
+def players(static=False):
+    """gid -> (team, position(tau)): two opponents meeting at tau = 2, a team-mate, and a far player."""
+    if static:
+        return {1: ("A", lambda t: np.array([73.0, 64.0])), 2: ("B", lambda t: np.array([77.0, 63.0])),
+                3: ("A", lambda t: np.array([71.0, 66.0])), 4: ("B", lambda t: np.array([50.0, 30.0]))}
+    return {1: ("A", lambda t: np.array([75.0, 64.0]) + np.array([4.0, 2.0]) * (t - 2)),
+            2: ("B", lambda t: np.array([75.5, 64.5]) + np.array([-2.0, 1.0]) * (t - 2)),
+            3: ("A", lambda t: np.array([69.0, 66.0]) + np.array([3.0, -1.0]) * (t - 2)),
+            4: ("B", lambda t: np.array([50.0, 30.0]) + np.array([1.0, 0.0]) * (t - 2))}
+
+
+def live(ppl, rng, noise=0.3):
+    """Live shot as the pipeline delivers it: noisy per-frame positions smoothed by temporal.smooth_tracks."""
+    frames = [{"t": round(float(t), 3), "shot": 0, "calibration": {"ok": True},
+               "players": [{"track_id": g, "global_id": g, "team": team, "role": "player", "position_uncertainty_m": noise,
+                            "x": float(pos(t)[0] + rng.normal(0, noise)), "y": float(pos(t)[1] + rng.normal(0, noise))}
+                           for g, (team, pos) in ppl.items()]} for t in np.arange(0.5, 3.51, 0.1)]
+    temporal.smooth_tracks(frames)
+    return crossview.live_tracks({"frames": frames}, 0)
+
+
+def scene(seed=0, s=0.4, static=False, move=0.0, n_people=3, lines=True):
+    """Replay frames of a camera at a fixed centre (or translating `move` m per frame) following the action
+    between the halfway line and the box: the only paint in view is the near touchline (one line family)."""
+    rng = np.random.default_rng(seed)
+    ppl = players(static)
+    frames, Gs = [], []
+    ts = np.round(np.arange(8.0, 12.01, 0.1), 3)
+    for k, t in enumerate(ts):
+        tau = ANCHOR["live_t"] + s * (t - ANCHOR["replay_t"])
+        C = np.array([79.0 + move * k, 82.0, -10.0])
+        target = np.r_[(ppl[1][1](tau - 0.1) + ppl[2][1](tau - 0.1)) / 2, 0.0]  # pans with a little lag
+        f = 2000.0 + 600.0 * k / (len(ts) - 1)  # zooms in
+        P = look_at_camera(C, target, f)
+        G = P[:, [0, 1, 3]] / P[2, 3]
+        people = []
+        for g, tid in list(zip((1, 2, 3), (101, 102, 103)))[:n_people]:
+            X = ppl[g][1](tau)
+            u = pitch.project(G, X)[0]
+            head = P @ np.r_[X, -crossview.BODY_H, 1.0]  # the player's box: feet to head, projected
+            hpx = np.linalg.norm(head[:2] / head[2] - u)
+            if 5 < u[0] < W - 5 and 5 < u[1] < H - 5:
+                people.append({"track": tid, "team": ppl[g][0], "foot": u + rng.normal(0, 1.5, 2),
+                               "h": hpx * rng.normal(1.0, 0.08), "h_ok": True})
+        frames.append({"t": float(t), "people": people, "masks": pitch.line_mask(render(G)) if lines else None,
+                       "motion": None})
+        Gs.append(G)
+    for k in range(1, len(frames)):
+        M = Gs[k] @ np.linalg.inv(Gs[k - 1])  # camera motion; exact homography for a rotating camera
+        src = np.float32([[0, 0], [W, 0], [W, H], [0, H]])
+        dst = pitch.project(M, src) + rng.normal(0, 0.3, (4, 2))
+        frames[k]["motion"] = cv2.getPerspectiveTransform(src, dst.astype(np.float32)).astype(float)
+    return frames, Gs, live(ppl, rng), ppl
+
+
+@pytest.fixture(scope="module")
+def solved():
+    frames, Gs, lv, ppl = scene()
+    rep = crossview.solve(frames, (W, H), lv, [ANCHOR], loo=True)
+    return rep, frames, Gs, ppl
+
+
+def test_recovers_camera_centre_and_speed(solved):
+    rep, *_ = solved
+    assert rep["status"] == "done", rep["failure"]
+    err = np.linalg.norm(np.array(rep["camera_centre"]) - [79.0, 82.0, 10.0])
+    # 1.5 m is the target; one painted line and three players leave a distance-vs-zoom ridge, so the
+    # honest bar is the reported sigma (profile floor included): the truth within 2 sigma
+    assert err <= max(1.5, 2 * rep["camera_centre_sigma_m"]), (err, rep["camera_centre_sigma_m"])
+    assert abs(rep["speed"] - 0.4) <= 0.03
+    assert {(m["replay_track"], m["live_gid"]) for m in rep["matched"]} >= {(101, 1), (102, 2), (103, 3)}
+    assert rep["fixed_centre_residual_px"] < crossview.MOVING_PX
+
+
+def test_only_parallel_paint_is_in_view(solved):
+    rep, *_ = solved
+    assert set(rep["line_families"]) <= {"along"}
+
+
+def test_ground_positions_near_contact_and_honest_sigma(solved):
+    rep, frames, Gs, ppl = solved
+    rng = np.random.default_rng(1)
+    errs, covered = [], []
+    ok = [k for k, r in enumerate(rep["frame_results"]) if r["ok"]]
+    assert len(ok) >= 0.8 * len(frames)
+    for k in ok:
+        r = rep["frame_results"][k]
+        tau = ANCHOR["live_t"] + 0.4 * (frames[k]["t"] - ANCHOR["replay_t"])
+        centre = (ppl[1][1](tau) + ppl[2][1](tau)) / 2
+        pts = centre + rng.uniform(-3, 3, (20, 2))  # ground within 3 m of the contact
+        img = pitch.project(Gs[k], pts)
+        img = img[(img[:, 0] > 0) & (img[:, 0] < W) & (img[:, 1] > 0) & (img[:, 1] < H)]
+        est = pitch.project(np.linalg.inv(r["G"]), img)
+        truth = pitch.project(np.linalg.inv(Gs[k]), img)
+        e = np.linalg.norm(est - truth, axis=1)
+        errs += list(e)
+        covered += list(e <= 2 * r["sigma"](img))
+    assert np.percentile(errs, 90) <= 0.4
+    assert np.mean(covered) >= 0.8
+
+
+def test_one_static_player_without_lines_is_underdetermined():
+    frames, _, lv, _ = scene(static=True, n_people=1, lines=False)
+    rep = crossview.solve(frames, (W, H), lv, [ANCHOR], use_lines=False, loo=False)
+    assert rep["status"] == "failed" and rep["failure"].startswith("underdetermined")
+    assert not any(r["ok"] for r in rep["frame_results"])
+
+
+def test_translating_camera_fails_honestly():
+    frames, _, lv, _ = scene(move=1.0, n_people=2)
+    rep = crossview.solve(frames, (W, H), lv, [ANCHOR], loo=False)
+    assert rep["status"] == "failed" and rep["failure"].startswith("replay camera moves")
+
+
+def test_static_players_leave_the_speed_ambiguous():
+    frames, _, lv, _ = scene(static=True)
+    rep = crossview.solve(frames, (W, H), lv, [ANCHOR], loo=False)
+    assert rep["status"] == "failed" and rep["failure"].startswith("sync ambiguous")

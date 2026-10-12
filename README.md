@@ -85,10 +85,10 @@ pip install -r backend/requirements.txt
 
 cp backend/.env.example backend/.env   # then add your API keys
 
-python -m flask --app backend.app run --debug
+python -m flask --app backend.app run --debug --port 5001  # 5000 is taken by macOS AirPlay Receiver
 ```
 
-The API is available at `http://127.0.0.1:5000`.
+The API is available at `http://127.0.0.1:5001`.
 
 | Endpoint              | Description                                          |
 |------------------------|------------------------------------------------------|
@@ -113,7 +113,7 @@ npm run dev
 ```
 
 The Vite dev server runs at `http://127.0.0.1:5173` and expects the backend
-at `http://127.0.0.1:5000`.
+at `http://127.0.0.1:5001`.
 
 ## Testing
 
