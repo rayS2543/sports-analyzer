@@ -117,7 +117,7 @@
 .formation-player[aria-pressed="true"] .player-pitch-name { background: #f2c14e; color: #1a1406; }
 .formation-player:hover .player-shirt { filter: brightness(1.15); }
 .shot-pitch { aspect-ratio: 105 / 68; margin: 6px 10px; }
-.shot-filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.shot-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 10px; }
 .shot-filters label { font-size: 11px; color: rgb(var(--muted)); }
 .shot-filters select { display: block; width: 100%; margin-top: 6px; background: rgb(var(--surface)); color: rgb(var(--fg)); border: 1px solid rgb(var(--line)); border-radius: 6px; font-size: 12px; padding: 7px; }
 .shot-marker { position: absolute; width: max(24px, var(--shot-size)); height: max(24px, var(--shot-size)); transform: translate(-50%, -50%); display: grid; place-items: center; border-radius: 50%; z-index: 1; }
