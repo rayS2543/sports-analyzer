@@ -6,7 +6,7 @@ def test_match_detail_preserves_pitch_and_shot_data(client, monkeypatch):
               "verticalLayout": {"x": 0.3, "y": 0.8}}
     team = {"id": 1, "name": "Home", "formation": "4-4-2", "starters": [player]}
     shot = {"id": 8, "teamId": 1, "playerId": 7, "x": 94, "y": 34,
-            "expectedGoals": 0.42, "period": "SecondHalf"}
+            "expectedGoals": 0.42, "period": "SecondHalf", "goalCrossedY": 33.1, "goalCrossedZ": 1.2}
     content = {"lineup": {"homeTeam": team, "awayTeam": {**team, "id": 2}},
                "shotmap": {"shots": [shot, {**shot, "x": None}, {**shot, "y": 80}]}}
     monkeypatch.setattr(matches_detail, "find_fixture", lambda *args: {"page_url": "/match"})
@@ -16,6 +16,7 @@ def test_match_detail_preserves_pitch_and_shot_data(client, monkeypatch):
     assert data["home"]["starters"][0]["captain"] is True
     assert len(data["shots"]) == 1
     assert data["shots"][0]["expectedGoals"] == 0.42
+    assert (data["shots"][0]["goalCrossedY"], data["shots"][0]["goalCrossedZ"]) == (33.1, 1.2)
     assert data["away"]["id"] == 2
 
 
