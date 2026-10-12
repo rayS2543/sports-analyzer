@@ -92,7 +92,8 @@ export function shotEnd(shot) {
 }
 
 // Shooter's view of the goal: screen-left is low y because shooters face +x, so no mirroring by team.
-function GoalMouth({ shots, selectedId, onSelect, onHover, onLeave }) {
+// `keeper` flips it to the goalkeeper's view, facing the shooter.
+function GoalMouth({ shots, selectedId, onSelect, onHover, onLeave, keeper }) {
   const plotted = shots.filter((shot) => !shot.isBlocked && isNum(shot.goalCrossedY) && isNum(shot.goalCrossedZ));
   const { left, right, top } = GOAL_VIEW;
   return (
@@ -108,7 +109,7 @@ function GoalMouth({ shots, selectedId, onSelect, onHover, onLeave }) {
             <circle
               key={shot.id}
               data-shot={shot.id}
-              cx={clamp(shot.goalCrossedY, left + 0.25, right - 0.25)}
+              cx={clamp(keeper ? left + right - shot.goalCrossedY : shot.goalCrossedY, left + 0.25, right - 0.25)}
               cy={-clamp(shot.goalCrossedZ, 0.2, top - 0.25)}
               r={offTarget ? 0.16 : 0.22}
               fill={OUTCOME_COLORS[outcome]}
@@ -122,12 +123,12 @@ function GoalMouth({ shots, selectedId, onSelect, onHover, onLeave }) {
           );
         })}
       </svg>
-      <figcaption>Goal view · where each shot crossed the line</figcaption>
+      <figcaption>{keeper ? "Keeper's view · shots on target faced" : "Goal view · where each shot crossed the line"}</figcaption>
     </figure>
   );
 }
 
-export default function ShotMap({ shots, home, away }) {
+export default function ShotMap({ shots, home, away, keeper = false }) {
   const [teamFilter, setTeamFilter] = useState("all");
   const [period, setPeriod] = useState("all");
   const [player, setPlayer] = useState("all");
@@ -165,22 +166,22 @@ export default function ShotMap({ shots, home, away }) {
   return (
     <div className="flex flex-col gap-4">
       <div className="shot-filters">
-        <label>Team<select aria-label="Team" value={teamFilter} onChange={(e) => { changeFilter(setTeamFilter, e.target.value); setPlayer("all"); }}>
+        {!keeper && <label>Team<select aria-label="Team" value={teamFilter} onChange={(e) => { changeFilter(setTeamFilter, e.target.value); setPlayer("all"); }}>
           <option value="all">Both teams</option><option value={home.id}>{home.team_name}</option><option value={away.id}>{away.team_name}</option>
-        </select></label>
+        </select></label>}
         <label>Period<select aria-label="Period" value={period} onChange={(e) => changeFilter(setPeriod, e.target.value)}>
           <option value="all">All periods</option>
           {[...new Set(shots.map((shot) => shot.period).filter(Boolean))].map((value) => <option key={value} value={value}>{words(value)}</option>)}
         </select></label>
-        <label>Player<select aria-label="Player" value={player} onChange={(e) => changeFilter(setPlayer, e.target.value)}>
+        <label>{keeper ? "Shooter" : "Player"}<select aria-label="Player" value={player} onChange={(e) => changeFilter(setPlayer, e.target.value)}>
           <option value="all">All players</option>{players.map(([id, { name, count }]) => <option key={id} value={id}>{name} ({count})</option>)}
         </select></label>
       </div>
-      <GoalMouth shots={visible} selectedId={selected?.id} onSelect={select} onHover={startHover} onLeave={endHover} />
-      <div className="flex justify-between gap-4 text-xs text-muted">
+      <GoalMouth keeper={keeper} shots={visible} selectedId={selected?.id} onSelect={select} onHover={startHover} onLeave={endHover} />
+      {!keeper && <div className="flex justify-between gap-4 text-xs text-muted">
         <span><span style={{ color: TEAM_COLORS.home }}>●</span> {home.team_name} →</span>
         <span className="text-right">← {away.team_name} <span style={{ color: TEAM_COLORS.away }}>●</span></span>
-      </div>
+      </div>}
       <div className="football-pitch shot-pitch" aria-label="Shot locations" onClick={(e) => e.target === e.currentTarget && setSelectedId(null)}>
         <PitchLines />
         {pathShots.length > 0 && (
