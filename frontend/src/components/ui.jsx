@@ -7,6 +7,7 @@ export const LEAGUE_NAMES = {
   SA: "Serie A",
   BL1: "Bundesliga",
   FL1: "Ligue 1",
+  CL: "Champions League",
 };
 
 // "2026-09-20" -> "Sat 20 Sep". Parsed as a calendar date so the day never shifts with the viewer's timezone.

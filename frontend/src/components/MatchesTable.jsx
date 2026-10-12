@@ -42,7 +42,7 @@ export default function MatchesTable({ league, leagueName }) {
       ) : matches === null ? (
         <SkeletonRows rows={5} />
       ) : matches.length === 0 ? (
-        <EmptyNote>No results in the last few days.</EmptyNote>
+        <EmptyNote>No results yet.</EmptyNote>
       ) : (
         <table className="w-full border-collapse text-sm">
           <caption className="sr-only">{leagueName ? `${leagueName} recent results` : "Recent results"}</caption>

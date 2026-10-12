@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from flask import Blueprint, jsonify, request
 
 from elo import compute_ratings, win_probability
-from football_client import FootballDataError, get, get_matches_over_range
+from football_client import FootballDataError, get
 from leagues import DEFAULT_LEAGUE, get_league
 
 predictions_bp = Blueprint("predictions", __name__)
@@ -20,14 +20,9 @@ def get_predictions():
     today = datetime.utcnow().date()
 
     try:
-        # football-data.org's free tier rejects any /matches date range over
-        # 10 days, so this 90-day lookback is fetched as chunked requests.
-        finished_data = get_matches_over_range(
-            league,
-            "FINISHED",
-            today - timedelta(days=90),
-            today,
-        )
+        # One season-wide call (the /matches date filter caps at 10 days on
+        # the free tier, which took ~10 calls); trimmed to the 90-day window below.
+        finished_data = get(f"/competitions/{league}/matches", params={"status": "FINISHED"})
         upcoming_data = get(
             "/matches",
             params={
@@ -43,7 +38,8 @@ def get_predictions():
     except FootballDataError as e:
         return jsonify({"error": e.message}), e.status_code
 
-    finished_matches = finished_data.get("matches", [])
+    cutoff = (today - timedelta(days=90)).isoformat()
+    finished_matches = [m for m in finished_data.get("matches", []) if m["utcDate"][:10] >= cutoff]
     upcoming_matches = upcoming_data.get("matches", [])
 
     ratings = compute_ratings(finished_matches)
