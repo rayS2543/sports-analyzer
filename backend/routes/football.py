@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from flask import Blueprint, jsonify, request
 
@@ -7,6 +7,8 @@ from football_client import FootballDataError, get
 from leagues import DEFAULT_LEAGUE, LEAGUES, get_league
 
 football_bp = Blueprint("football", __name__)
+
+RECENT_RESULTS = 10
 
 
 @football_bp.route("/leagues")
@@ -18,34 +20,34 @@ def list_leagues():
 def get_todays_matches():
     """Today's fixtures across every supported league, tagged with league info.
 
-    Loops per league (rather than one combined call) so a single league
-    being unavailable on the current API plan doesn't take down the rest.
+    One combined request: the free tier allows only 10 calls/minute, and a
+    cold dashboard load used to spend 5 of them here.
     """
     today = datetime.utcnow().date().isoformat()
 
-    all_matches = []
-    for code, info in LEAGUES.items():
-        try:
-            data = get("/matches", params={"competitions": code, "dateFrom": today, "dateTo": today})
-        except FootballDataError:
-            continue
+    try:
+        data = get("/matches", params={"competitions": ",".join(LEAGUES), "dateFrom": today, "dateTo": today})
+    except FootballDataError as e:
+        return jsonify({"error": e.message}), e.status_code
 
-        for match in data.get("matches", []):
-            all_matches.append(
-                {
-                    "id": match["id"],
-                    "league_code": code,
-                    "league_name": info["name"],
-                    "home": match["homeTeam"]["name"],
-                    "away": match["awayTeam"]["name"],
-                    "home_crest": match["homeTeam"].get("crest"),
-                    "away_crest": match["awayTeam"].get("crest"),
-                    "home_score": match["score"]["fullTime"]["home"],
-                    "away_score": match["score"]["fullTime"]["away"],
-                    "status": match["status"],
-                    "kickoff": match["utcDate"],
-                }
-            )
+    all_matches = []
+    for match in data.get("matches", []):
+        code = match["competition"]["code"]
+        all_matches.append(
+            {
+                "id": match["id"],
+                "league_code": code,
+                "league_name": LEAGUES[code]["name"],
+                "home": match["homeTeam"]["name"],
+                "away": match["awayTeam"]["name"],
+                "home_crest": match["homeTeam"].get("crest"),
+                "away_crest": match["awayTeam"].get("crest"),
+                "home_score": match["score"]["fullTime"]["home"],
+                "away_score": match["score"]["fullTime"]["away"],
+                "status": match["status"],
+                "kickoff": match["utcDate"],
+            }
+        )
 
     all_matches.sort(key=lambda m: m["kickoff"])
     return jsonify(all_matches)
@@ -57,15 +59,9 @@ def get_matches():
     if get_league(league) is None:
         return jsonify({"error": f"Unknown league code '{league}'"}), 400
 
-    today = datetime.utcnow().date()
-    date_from = (today - timedelta(days=10)).isoformat()
-    date_to = today.isoformat()
-
     try:
-        data = get(
-            "/matches",
-            params={"competitions": league, "dateFrom": date_from, "dateTo": date_to},
-        )
+        # Same call (and cache entry) /predictions uses for its Elo history.
+        data = get(f"/competitions/{league}/matches", params={"status": "FINISHED"})
     except FootballDataError as e:
         return jsonify({"error": e.message}), e.status_code
 
@@ -102,8 +98,9 @@ def get_matches():
             }
         )
     cleanedData.sort(key=lambda m: (m["date"], m["home"], m["away"]), reverse=True)
+    # Persist the whole season so /analytics/form has history; show only the latest.
     db.upsert_matches(cleanedData, league)
-    return jsonify(cleanedData)
+    return jsonify(cleanedData[:RECENT_RESULTS])
 
 
 @football_bp.route("/teams")

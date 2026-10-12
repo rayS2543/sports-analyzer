@@ -26,6 +26,7 @@ LEAGUE_MAP = {
     "SA": (55, "serie-a"),  # Serie A
     "BL1": (54, "bundesliga"),  # Bundesliga
     "FL1": (53, "ligue-1"),  # Ligue 1
+    "CL": (42, "champions-league"),  # Champions League
 }
 
 POSITION_GROUPS = {0: "GK", 1: "DEF", 2: "MID", 3: "FWD"}
@@ -116,6 +117,19 @@ _TEAM_ALIASES = {
         "Racing Club de Lens": "Lens",
         "AS Monaco FC": "Monaco",
         "RC Strasbourg Alsace": "Strasbourg",
+        "Club Brugge KV": "Club Brugge",
+        "FK Bodø/Glimt": "Bodø/Glimt",
+        "FK Shakhtar Donetsk": "Shakhtar Donetsk",
+        "Fenerbahçe SK": "Fenerbahçe",
+        "Feyenoord Rotterdam": "Feyenoord",
+        "Galatasaray SK": "Galatasaray",
+        "LASK Linz": "LASK",
+        "PAE AEK": "AEK Athens",
+        "PSV": "PSV Eindhoven",
+        "SK Slavia Praha": "Slavia Prague",
+        "Sporting Clube de Portugal": "Sporting CP",
+        "Viking FK": "Viking",
+        "ŠK Slovan Bratislava": "Slovan Bratislava",
     }.items()
 }
 

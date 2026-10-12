@@ -1,6 +1,8 @@
 import itertools
 import json
-from datetime import date
+import threading
+import time
+from datetime import date, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -43,6 +45,12 @@ def make_match(home, away, home_score, away_score, date):
 # ---------------------------------------------------------------------------
 
 
+def test_leagues_include_champions_league(client):
+    codes = [league["code"] for league in client.get("/leagues").get_json()]
+
+    assert "CL" in codes
+
+
 def test_home_returns_running_message(client):
     resp = client.get("/")
 
@@ -80,9 +88,41 @@ def test_matches_skips_fixtures_without_a_final_score(client):
     assert data[0]["home"] == "Sevilla"
 
 
+def test_matches_today_uses_one_combined_request_and_tags_each_league(client):
+    pl = dict(make_match("Arsenal", "Chelsea", None, None, "2026-10-12"), competition={"code": "PL"}, status="TIMED")
+    pd = dict(make_match("Sevilla", "Valencia", 1, 0, "2026-10-12"), competition={"code": "PD"}, status="FINISHED")
+
+    with patch("football_client.requests.get", return_value=FakeResponse({"matches": [pl, pd]})) as upstream:
+        resp = client.get("/matches/today")
+
+    assert upstream.call_count == 1
+    assert [(m["league_code"], m["league_name"]) for m in resp.get_json()] == [("PL", "Premier League"), ("PD", "La Liga")]
+
+
+def test_matches_today_surfaces_upstream_errors(client):
+    with patch("football_client.requests.get", return_value=FakeResponse({}, status_code=429)):
+        resp = client.get("/matches/today")
+
+    assert resp.status_code == 429
+    assert "rate limit" in resp.get_json()["error"]
+
+
 # ---------------------------------------------------------------------------
 # /matches
 # ---------------------------------------------------------------------------
+
+
+def test_matches_returns_latest_ten_finished_matches_however_old(client):
+    # e.g. an international break or a Champions League gap: nothing recent, results still show.
+    payload = {"matches": [make_match(f"Home{i}", f"Away{i}", 1, 0, f"2026-09-{i + 1:02d}") for i in range(12)]}
+
+    with patch("football_client.requests.get", return_value=FakeResponse(payload)) as upstream:
+        data = client.get("/matches?league=CL").get_json()
+
+    assert upstream.call_args.args[0].endswith("/competitions/CL/matches")
+    assert len(data) == 10
+    assert data[0]["date"] == "2026-09-12"
+    assert data[-1]["date"] == "2026-09-03"
 
 
 def test_matches_computes_winner_and_points_for_home_win(client):
@@ -195,69 +235,51 @@ def test_predictions_requests_timed_matches_alongside_scheduled(client):
     assert upcoming_call["status"] == "SCHEDULED,TIMED"
 
 
-def test_predictions_chunks_finished_matches_lookback_into_10_day_windows(client):
+def test_predictions_fetches_finished_history_in_one_call_and_keeps_last_90_days(client):
+    today = date.today()
+    recent = (today - timedelta(days=5)).isoformat()
+    old = (today - timedelta(days=200)).isoformat()
     calls = []
 
     def fake_get(url, headers=None, params=None, timeout=10):
-        calls.append(params)
-        return FakeResponse({"matches": []})
-
-    with patch("football_client.requests.get", side_effect=fake_get):
-        client.get("/predictions")
-
-    finished_calls = [c for c in calls if c["status"] == "FINISHED"]
-    assert len(finished_calls) > 1
-    for c in finished_calls:
-        span = date.fromisoformat(c["dateTo"]) - date.fromisoformat(c["dateFrom"])
-        assert span.days <= 10
-
-
-def test_predictions_reuses_history_after_live_data_cache_expires(client):
-    with patch("cache.time.monotonic", return_value=0) as clock, patch(
-        "football_client.requests.get", return_value=FakeResponse({"matches": []})
-    ) as upstream:
-        assert client.get("/predictions?league=PD").status_code == 200
-        upstream.reset_mock()
-
-        clock.return_value = 181
-        assert client.get("/predictions?league=PD").status_code == 200
-        assert upstream.call_count == 1
-        assert upstream.call_args.kwargs["params"]["status"] == "SCHEDULED,TIMED"
-
-        # A different league still needs its own history.
-        upstream.reset_mock()
-        assert client.get("/predictions?league=PL").status_code == 200
-        assert upstream.call_count > 1
-
-        # Historical results eventually refresh too.
-        upstream.reset_mock()
-        clock.return_value = 3601
-        assert client.get("/predictions?league=PD").status_code == 200
-        assert upstream.call_count > 1
-
-
-def test_predictions_merges_matches_from_every_finished_chunk(client):
-    upcoming_payload = {
-        "matches": [make_match("Real Madrid", "Barcelona", None, None, "2024-02-01")]
-    }
-
-    def fake_get(url, headers=None, params=None, timeout=10):
+        calls.append((url, params))
         if params.get("status") == "FINISHED":
-            date_str = params["dateFrom"]
             return FakeResponse(
-                {"matches": [make_match("Home", "Away", 1, 0, date_str)]}
+                {
+                    "matches": [
+                        make_match("Real Madrid", "Barcelona", 3, 0, recent),
+                        # Barcelona's old win must not count: outside the 90-day window.
+                        make_match("Barcelona", "Real Madrid", 9, 0, old),
+                    ]
+                }
             )
-        return FakeResponse(upcoming_payload)
+        return FakeResponse({"matches": [make_match("Real Madrid", "Barcelona", None, None, today.isoformat())]})
 
     with patch("football_client.requests.get", side_effect=fake_get):
-        resp = client.get("/predictions")
+        resp = client.get("/predictions?league=PD")
 
-    assert resp.status_code == 200
+    assert len([c for c in calls if c[1].get("status") == "FINISHED"]) == 1
+    assert resp.get_json()[0]["predicted_winner"] == "Real Madrid"
+
+
+def test_concurrent_identical_requests_share_one_upstream_call(client):
+    def slow_get(*args, **kwargs):
+        time.sleep(0.1)
+        return FakeResponse({"standings": [{"type": "TOTAL", "table": []}]})
+
+    with patch("football_client.requests.get", side_effect=slow_get) as upstream:
+        threads = [threading.Thread(target=client.get, args=("/standings?league=PD",)) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    assert upstream.call_count == 1
 
 
 def test_predictions_picks_higher_rated_team_as_winner(client):
     finished_payload = {
-        "matches": [make_match("Real Madrid", "Barcelona", 3, 0, "2024-01-01")]
+        "matches": [make_match("Real Madrid", "Barcelona", 3, 0, date.today().isoformat())]
     }
     upcoming_payload = {
         "matches": [make_match("Real Madrid", "Barcelona", None, None, "2024-02-01")]

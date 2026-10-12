@@ -10,6 +10,8 @@ import fotmob_client
     ("SA", "FC Internazionale Milano", "ACF Fiorentina", "Inter", "Fiorentina"),
     ("BL1", "TSG 1899 Hoffenheim", "1. FSV Mainz 05", "Hoffenheim", "Mainz 05"),
     ("FL1", "Olympique de Marseille", "Stade Rennais FC 1901", "Marseille", "Rennes"),
+    ("CL", "PSV", "Sporting Clube de Portugal", "PSV Eindhoven", "Sporting CP"),
+    ("CL", "PAE AEK", "SK Slavia Praha", "AEK Athens", "Slavia Prague"),
 ])
 def test_fixture_matching_handles_provider_names(monkeypatch, league, home, away, provider_home, provider_away):
     fixture = {"id": 123, "pageUrl": "/match#123", "status": {"utcTime": "2026-09-20T14:00:00Z"},
