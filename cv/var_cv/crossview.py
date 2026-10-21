@@ -1183,6 +1183,19 @@ def fit_shot(shot, hyps, ctxs, sigma_m, notes):
     return best, rival
 
 
+def feet_failure(feet_chi, matched_chi, n_obs, n_matched, people_matched, people_total, span_m):
+    """Why a joint fit was rejected on its feet residuals. feet_chi charges every replay foot without a live
+    partner the full CAP ("3 sigma"), so when most feet have none the number says nothing about the camera:
+    the replay then shows people the live shot does not track, and there is nothing to check a camera against."""
+    head = f"no consistent camera: the best fit leaves the replay feet {math.sqrt(feet_chi):.1f} sigma from the live players on average"
+    detail = f"{n_matched} of {n_obs} replay foot observations ({people_matched} of {people_total} replay people) match a live player"
+    if n_matched < 0.5 * n_obs:
+        sig = "" if matched_chi is None else f", and those are {math.sqrt(matched_chi):.1f} sigma off"
+        return (f"{head}; {detail}, spanning {span_m:.1f} m{sig}. Most replay people are not tracked in the live shot "
+                "(or could not be identified), so a camera cannot be checked against them")
+    return f"{head} ({detail}; wrong identities, or live tracks that swap people)"
+
+
 def solve(frames, size, live, anchors, use_lines=True, loo=True):
     """Pure core (no I/O). frames: replay shot samples [{t, people: [{track, team, foot, h}], masks, motion}].
     Returns a report dict with per-frame "frame_results" [{ok, failure, G (pitch->image), sigma, p90_m, ...}]."""
@@ -1222,8 +1235,11 @@ def solve(frames, size, live, anchors, use_lines=True, loo=True):
     feet_chi = (float(np.minimum(np.sum(r ** 2, axis=1), CAP).sum()) + CAP * (n_obs - len(r))) / max(n_obs, 1)
     report["feet_chi2_per_observation"] = round(feet_chi, 2)
     if feet_chi > MAX_FEET_CHI2:
-        why = (f"no consistent camera: the best fit leaves the replay feet {math.sqrt(feet_chi):.1f} sigma "
-               f"from the live players on average (wrong identities, or live tracks that swap people)")
+        anchor_xy = [live_at(shot.live[g], jf.anchor["live_t"])[0][0] for g in set(jf.matched.values())]
+        anchor_xy = [p for p in anchor_xy if np.isfinite(p).all()]
+        span = max((float(np.linalg.norm(a - b)) for a in anchor_xy for b in anchor_xy), default=0.0)
+        why = feet_failure(feet_chi, float(np.mean(np.minimum(np.sum(r ** 2, axis=1), CAP))) if len(r) else None, n_obs, len(r),
+                           len(set(jf.matched)), len({ob[1] for ob in shot.obs if ob[0] in jf.pos}), span)
         _fail_all(n, why, report)
         Gs = jf.cams(jf.x)[3]
         for i in jf.idx:  # rejected camera, kept for --debug-dir overlays only (never written as a homography)

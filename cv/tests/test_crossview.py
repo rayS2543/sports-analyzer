@@ -130,3 +130,11 @@ def test_static_players_leave_the_speed_ambiguous():
     frames, _, lv, _ = scene(static=True)
     rep = crossview.solve(frames, (W, H), lv, [ANCHOR], loo=False)
     assert rep["status"] == "failed" and rep["failure"].startswith("sync ambiguous")
+
+
+def test_feet_failure_says_when_the_replay_shows_people_the_live_shot_does_not_track():
+    few = crossview.feet_failure(8.88, 7.77, 174, 17, 4, 8, 1.8)
+    assert few.startswith("no consistent camera") and "17 of 174" in few and "4 of 8 replay people" in few
+    assert "1.8 m" in few and "not tracked in the live shot" in few and "swap" not in few
+    most = crossview.feet_failure(7.0, 7.0, 40, 30, 3, 3, 12.0)  # most feet matched, still no camera: identities are the suspect
+    assert "30 of 40" in most and "wrong identities" in most and "not tracked" not in most
