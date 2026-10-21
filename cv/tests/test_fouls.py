@@ -268,3 +268,54 @@ def test_indicator_not_observable_has_no_value():
     i = fouls.ind("X", True, 0.9, observable=False, detail="occluded")
     assert i["value"] is None and i["confidence"] == 0 and not i["observable"]
     assert math.isclose(fouls.ind("X", 1, 3.0)["confidence"], 1.0)
+
+
+def _posed(frames):
+    return [{"t": t, "kps": [a, b], "boxes": [[0, 220, 1, 400]] * 2} for t, a, b in frames]
+
+
+def test_swing_is_a_limb_moving_relative_to_its_own_hips():
+    still, kick = standing(500), standing(500)
+    kick[fouls.K["rank"], :2] += (60, -15)  # the foot swings 62 px in 0.1 s: 3.4 body heights/s
+    pan = lambda k: k + np.array([100, 0, 0])  # the camera pans: every keypoint moves 100 px
+    posed = _posed([(1.0, still, still), (1.1, pan(kick), pan(still))])
+    assert fouls._swing(posed, 1.1, 0, "rank") == pytest.approx(math.hypot(60, 15) / 0.1 / 180, rel=0.05)
+    assert fouls._swing(posed, 1.1, 1, "rank") == pytest.approx(0, abs=1e-6)  # a pan alone is not a swing
+    assert fouls._swing(posed[:1], 1.1, 0, "rank") is None  # one frame: no speed
+
+
+def test_the_limb_that_swings_is_the_challenger_not_the_one_in_the_way():
+    in_the_way, kicker = standing(500), standing(560)
+    boot = kicker.copy()
+    boot[fouls.K["rank"], :2] = (514, 375)  # the boot swung into the other player's shin
+    posed = _posed([(1.0, in_the_way, kicker), (1.1, in_the_way, boot)])
+    # distance alone read it the other way round: the standing player's knee against the kicker's shin
+    j, c, sw = fouls._initiator(posed, 1.1, 0, {"striker": "lkne"}, {"striker": "rank"})
+    assert j == 1 and c["striker"] == "rank" and sw[1] > fouls.SWING_RATIO * sw[0]
+    # a boot that barely moves (below SWING_MIN) or a measurement that is missing changes nothing
+    slow = kicker.copy()
+    slow[fouls.K["rank"], :2] += (-10, -5)
+    j, _, sw = fouls._initiator(_posed([(1.0, in_the_way, kicker), (1.1, in_the_way, slow)]), 1.1, 0, {"striker": "lkne"}, {"striker": "rank"})
+    assert j == 0 and sw[1] < fouls.SWING_MIN
+    j, _, sw = fouls._initiator(posed[1:], 1.1, 0, {"striker": "lkne"}, {"striker": "rank"})
+    assert j == 0 and sw is None
+    # both limbs swinging alike: no override
+    both = in_the_way.copy()
+    both[fouls.K["lkne"], :2] += (30, -20)
+    j, _, _ = fouls._initiator(_posed([(1.0, in_the_way, kicker), (1.1, both, boot)]), 1.1, 0, {"striker": "lkne"}, {"striker": "rank"})
+    assert j == 0
+
+
+class _Kit:  # a kit model whose "features" are the team labels themselves
+    margin = staticmethod(lambda f: 1.0)
+    odd = staticmethod(lambda f: False)
+    predict = staticmethod(lambda f: f)
+
+
+def test_team_votes_discount_crowded_crops_and_leave_ambiguous_kits_unlabelled():
+    lone, front, behind = [500, 0, 600, 300], [0, 0, 100, 300], [50, 0, 150, 300]
+    # track 2 stands behind track 3: its crop shows 3's kit (B) in 6 frames and its own (A) only in the 2 where 3 is gone
+    crowded = [(0.1 * k, [lone, front, behind], ["A", "B", "B"], None) for k in range(6)]
+    clear = [(0.6 + 0.1 * k, [lone, front], ["A", "A"], None) for k in range(2)]
+    ids = [[1, 2, 3]] * 6 + [[1, 2]] * 2
+    assert fouls.team_votes(crowded + clear, ids, _Kit) == {1: "A", 3: "B"}  # 2: 2.0 A against 1.5 B is not decisive

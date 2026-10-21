@@ -773,6 +773,39 @@ def _fps(recs):
     return 1.0 / max(1e-6, recs[1]["t"] - recs[0]["t"]) if len(recs) > 1 else 30.0
 
 
+SWING_WINDOW_S = 0.3  # the swing of a striking limb is measured over this long up to the contact
+SWING_RATIO = 3.0     # the other body's contacting limb must swing this much faster to be the challenger instead ...
+SWING_MIN = 1.5       # ... and at least this fast (body heights/s): two near-zero speeds say nothing
+
+
+def _swing(posed, t_c, person, striker):
+    """Peak speed, in own body heights per second, of one striking keypoint relative to its owner's hips over
+    SWING_WINDOW_S up to t_c (own-hip frame: a camera pan or zoom cancels); None when fewer than two posed frames
+    show both. A kick swings fast; a leg that is merely in the way does not."""
+    pts = []
+    for r in posed:
+        k = r["kps"][person]
+        if t_c - SWING_WINDOW_S <= r["t"] <= t_c and k is not None and visible(k, striker):
+            hips = [pt(k, n) for n in ("lhip", "rhip") if visible(k, n)]
+            if hips:
+                pts.append((r["t"], pt(k, striker) - np.mean(hips, 0), body_height_px(k, r["boxes"][person])))
+    speeds = [np.hypot(*(b[1] - a[1])) / (b[0] - a[0]) / b[2] for a, b in zip(pts, pts[1:]) if b[0] > a[0]]
+    return max(speeds) if speeds else None
+
+
+def _initiator(posed, t_c, j, contact, other):
+    """(j, contact, swings): the contact episode read the other way round (`other`, the same contact seen from
+    the other body) when that body's contacting limb is clearly the one swinging; swings = (this, other) limb
+    speeds, or None when one cannot be measured. Distance is symmetric: a knee in the way of a kick touches the
+    kicker's shin as closely as the boot touches the knee, so the initiator has to come from motion."""
+    sw = (_swing(posed, t_c, j, contact["striker"]), _swing(posed, t_c, 1 - j, other["striker"]))
+    if None in sw:
+        return j, contact, None
+    if sw[1] >= SWING_MIN and sw[1] > SWING_RATIO * sw[0]:
+        return 1 - j, other, sw
+    return j, contact, sw
+
+
 def _onset(posed):
     """(frame, striker index, contact) at the contact ONSET: the first frame where a striking point
     touches the other body (later frames are usually the tangle after impact). Without any touching
@@ -882,6 +915,18 @@ def _at_onset(cand, analysis, fps, size, models, debug_dir, recs, posed, ta, tb,
             basis = "contact is symmetric (limb to limb); the player further from the ball is taken as the challenger"
         else:
             basis += " (contact is nearly symmetric and the ball does not separate them: low confidence)"
+    other = nearest_contact(rec["kps"][1 - j], rec["kps"][j], body_height_px(rec["kps"][j], rec["boxes"][j]))
+    swings = None
+    if other and other["d"] <= NEAR:
+        j2, contact2, swings = _initiator(posed, t_c, j, contact, other)
+        if j2 != j:
+            swings = swings[::-1]
+            basis = (f"its {STRIKERS[contact2['striker']]} swings {swings[0]:.1f} body heights/s into the other player's "
+                     f"{contact2['part']}, against {swings[1]:.1f} for the other player's contacting limb")
+            j, contact = j2, contact2
+        if swings:
+            notes.append(f"Contacting-limb swing over the 0.3 s before contact (relative to each body's own hips, so a pan "
+                         f"cancels): challenger {swings[0]:.1f}, other player {swings[1]:.1f} body heights/s.")
     ci, vi = j, 1 - j
     chal_track, vic_track = (ta, tb) if ci == 0 else (tb, ta)
     ck, vk = rec["kps"][ci], rec["kps"][vi]
@@ -1302,11 +1347,31 @@ def clear_kit(model, feature):
     return model.predict(feature)
 
 
+CROWD_OVERLAP = 0.3  # a box overlapping another person's by this much (of the smaller box) holds two shirts
+CROWD_WEIGHT = 0.25  # ... so its kit reading counts this much in a track's team vote
+KIT_SHARE = 0.7      # a team needs this share of the weighted votes, else the kit is ambiguous (null)
+
+
+def team_votes(recs, ids, model):
+    """track id -> 'A' / 'B' / absent: weighted majority of the clear shirt readings along the track. A person
+    standing behind another reads the front person's kit; those crops count CROWD_WEIGHT, and a track whose
+    votes are not decisive (KIT_SHARE) gets no team rather than a coin flip."""
+    votes = {}
+    for (_, boxes, feats, _), tids in zip(recs, ids):
+        for i, (f, tid) in enumerate(zip(feats, tids)):
+            kit = clear_kit(model, f)
+            if kit:
+                crowded = any(j != i and overlap(boxes[i], boxes[j]) > CROWD_OVERLAP for j in range(len(boxes)))
+                votes.setdefault(int(tid), Counter())[kit] += CROWD_WEIGHT if crowded else 1.0
+    return {tid: v.most_common(1)[0][0] for tid, v in votes.items() if v.most_common(1)[0][1] >= KIT_SHARE * sum(v.values())}
+
+
 def closeup_analysis(analysis, shots, cap, fps, model, device, sample_hz=10, clip_model=None):
     """Players for close-up shots found by the pose model's own person detector: tracked per shot
     (track.assign_ids, fresh per shot). Teams: the clip's kit model (team_model.json, so A/B mean the same
     kits as in every other window), else 2-means on the close-up's own shirt colours (from the pose torso);
-    by track majority, with a ratio test so ambiguous kits (referee, keeper) stay null. No positions: these
+    by weighted track majority (crops of overlapping people count less), with a ratio test so ambiguous kits
+    (referee, keeper, a player hidden behind another) stay null. No positions: these
     shots are uncalibrated."""
     from . import teams, track
     frames, per_shot = [], []
@@ -1332,15 +1397,10 @@ def closeup_analysis(analysis, shots, cap, fps, model, device, sample_hz=10, cli
             keep = ((boxes[:, 3] - boxes[:, 1]) >= CLOSEUP_MIN_PX) & (boxes[:, 3] > 0.3 * frame.shape[0])
             boxes, kd = boxes[keep], kd[keep]
             recs.append((i / fps, boxes, [torso_kit(frame, k, b) for k, b in zip(kd, boxes)], kd))
-        per_shot.append((shot, recs, track.assign_ids([(b, lambda q: q) for _, b, _, _ in recs])))
+        per_shot.append((shot, recs, track.assign_ids([(b, lambda q: q) for _, b, _, _ in recs], tangles=False)))
     model_t = clip_model or teams.fit([f for _, recs, _ in per_shot for _, _, fs, _ in recs for f in fs if f is not None])
     for shot, recs, ids in per_shot:
-        votes = {}
-        for (_, _, feats, _), tids in zip(recs, ids):
-            for f, tid in zip(feats, tids):
-                if clear_kit(model_t, f):
-                    votes.setdefault(int(tid), Counter())[clear_kit(model_t, f)] += 1
-        team = {tid: v.most_common(1)[0][0] for tid, v in votes.items()}
+        team = team_votes(recs, ids, model_t)
         ball = [f for f in analysis["frames"] if f["shot"] == shot["id"] and f.get("ball")]
         for (t, boxes, _, kd), tids in zip(recs, ids):
             b = min(ball, key=lambda f: abs(f["t"] - t)) if ball else None
