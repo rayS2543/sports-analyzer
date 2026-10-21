@@ -1,14 +1,55 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
 
 import db
 from football_client import FootballDataError, get
+from fotmob_client import FotMobError, _normalize, champions_league_fixtures
 from leagues import DEFAULT_LEAGUE, LEAGUES, get_league
 
 football_bp = Blueprint("football", __name__)
 
 RECENT_RESULTS = 10
+CHAMPIONS_LEAGUE = "CL"
+
+
+def _calendar_day(value):
+    """Return YYYY-MM-DD, or None when the value is not a real calendar day."""
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
+def _clean_today_match(match, today, fallback_code=None):
+    kickoff = match.get("utcDate") or ""
+    if kickoff[:10] != today:
+        return None
+
+    code = (match.get("competition") or {}).get("code") or fallback_code
+    info = get_league(code)
+    if info is None:
+        return None
+
+    home = match.get("homeTeam") or {}
+    away = match.get("awayTeam") or {}
+    full_time = (match.get("score") or {}).get("fullTime") or {}
+    if not home.get("name") or not away.get("name"):
+        return None
+
+    return {
+        "id": match.get("id"),
+        "league_code": code,
+        "league_name": info["name"],
+        "home": home.get("name"),
+        "away": away.get("name"),
+        "home_crest": home.get("crest"),
+        "away_crest": away.get("crest"),
+        "home_score": full_time.get("home"),
+        "away_score": full_time.get("away"),
+        "status": match.get("status"),
+        "kickoff": kickoff,
+    }
 
 
 @football_bp.route("/leagues")
@@ -20,36 +61,78 @@ def list_leagues():
 def get_todays_matches():
     """Today's fixtures across every supported league, tagged with league info.
 
-    One combined request: the free tier allows only 10 calls/minute, and a
-    cold dashboard load used to spend 5 of them here.
+    Domestic leagues and Champions League share one football-data.org request.
+    UCL is also read from that competition's match list. When neither feed
+    includes a Champions League fixture, FotMob's public day list fills it in.
+    `date` is the viewer's local calendar day (YYYY-MM-DD); omitted, it is
+    today in UTC.
     """
-    today = datetime.utcnow().date().isoformat()
+    requested = request.args.get("date")
+    if requested is None:
+        today = datetime.now(timezone.utc).date().isoformat()
+    else:
+        today = _calendar_day(requested)
+        if today is None:
+            return jsonify({"error": "date must be YYYY-MM-DD"}), 400
+
+    collected = {}
+    primary_error = None
+
+    def add_cleaned(cleaned):
+        key = cleaned["id"]
+        if key is None:
+            key = (cleaned["home"], cleaned["away"], cleaned["kickoff"])
+        collected[key] = cleaned
+
+    def absorb(data, fallback_code=None):
+        for match in data.get("matches") or []:
+            cleaned = _clean_today_match(match, today, fallback_code)
+            if cleaned is not None:
+                add_cleaned(cleaned)
 
     try:
-        data = get("/matches", params={"competitions": ",".join(LEAGUES), "dateFrom": today, "dateTo": today})
-    except FootballDataError as e:
-        return jsonify({"error": e.message}), e.status_code
-
-    all_matches = []
-    for match in data.get("matches", []):
-        code = match["competition"]["code"]
-        all_matches.append(
-            {
-                "id": match["id"],
-                "league_code": code,
-                "league_name": LEAGUES[code]["name"],
-                "home": match["homeTeam"]["name"],
-                "away": match["awayTeam"]["name"],
-                "home_crest": match["homeTeam"].get("crest"),
-                "away_crest": match["awayTeam"].get("crest"),
-                "home_score": match["score"]["fullTime"]["home"],
-                "away_score": match["score"]["fullTime"]["away"],
-                "status": match["status"],
-                "kickoff": match["utcDate"],
-            }
+        data = get(
+            "/matches",
+            params={
+                "competitions": ",".join(LEAGUES),
+                "dateFrom": today,
+                "dateTo": today,
+                "limit": 100,
+            },
         )
+        absorb(data)
+    except FootballDataError as e:
+        primary_error = e
 
-    all_matches.sort(key=lambda m: m["kickoff"])
+    # The free plan often rejects this resource even when CL is on the list feed.
+    try:
+        data = get(
+            f"/competitions/{CHAMPIONS_LEAGUE}/matches",
+            params={"dateFrom": today, "dateTo": today},
+        )
+        absorb(data, fallback_code=CHAMPIONS_LEAGUE)
+    except FootballDataError:
+        pass
+
+    seen_cl = {
+        (_normalize(m["home"]), _normalize(m["away"]))
+        for m in collected.values()
+        if m["league_code"] == CHAMPIONS_LEAGUE
+    }
+    try:
+        for fixture in champions_league_fixtures(today):
+            pair = (_normalize(fixture["home"]), _normalize(fixture["away"]))
+            if pair in seen_cl:
+                continue
+            seen_cl.add(pair)
+            add_cleaned(fixture)
+    except FotMobError:
+        pass
+
+    if not collected and primary_error:
+        return jsonify({"error": primary_error.message}), primary_error.status_code
+
+    all_matches = sorted(collected.values(), key=lambda m: (m["kickoff"], m["home"], m["away"]))
     return jsonify(all_matches)
 
 

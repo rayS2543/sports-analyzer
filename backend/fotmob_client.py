@@ -141,6 +141,82 @@ def _normalize(name):
     return " ".join(w for w in words if w not in _STRIP_WORDS)
 
 
+def _fixture_status(status):
+    if status.get("cancelled"):
+        reason = ((status.get("reason") or {}).get("shortKey") or "").lower()
+        return "POSTPONED" if "postpon" in reason else "CANCELLED"
+    if status.get("finished") or status.get("awarded"):
+        return "FINISHED"
+    if status.get("ongoing") or status.get("started"):
+        return "IN_PLAY"
+    return "TIMED"
+
+
+def _crest_url(team):
+    team_id = (team or {}).get("id")
+    if not team_id:
+        return None
+    return f"https://images.fotmob.com/image_resources/logo/teamlogo/{team_id}.png"
+
+
+@cached(ttl_seconds=120)
+def champions_league_fixtures(date):
+    """Champions League fixtures on a YYYY-MM-DD from FotMob's public day list.
+
+    football-data.org's free plan rejects /competitions/CL/matches, and the
+    cross-competition match list often has no UCL rows. This feed is keyless.
+    """
+    league_id = LEAGUE_MAP["CL"][0]
+    try:
+        response = requests.get(
+            f"{BASE_URL}/api/data/matches",
+            params={"date": date.replace("-", "")},
+            headers=HEADERS,
+            timeout=10,
+        )
+    except requests.exceptions.RequestException as e:
+        raise FotMobError(f"Could not reach FotMob: {e}", status_code=502)
+
+    if not response.ok:
+        raise FotMobError(f"Unexpected FotMob response ({response.status_code}).", status_code=502)
+
+    try:
+        data = response.json()
+    except ValueError as e:
+        raise FotMobError(f"Could not parse FotMob's match list: {e}", status_code=502)
+
+    fixtures = []
+    for league in data.get("leagues") or []:
+        if league.get("id") != league_id:
+            continue
+        for match in league.get("matches") or []:
+            status = match.get("status") or {}
+            kickoff = status.get("utcTime") or ""
+            if not kickoff.startswith(date):
+                continue
+            home = match.get("home") or {}
+            away = match.get("away") or {}
+            if not home.get("name") or not away.get("name"):
+                continue
+            played = bool(status.get("started") or status.get("finished") or status.get("ongoing"))
+            fixtures.append(
+                {
+                    "id": match.get("id"),
+                    "league_code": "CL",
+                    "league_name": "Champions League",
+                    "home": home["name"],
+                    "away": away["name"],
+                    "home_crest": _crest_url(home),
+                    "away_crest": _crest_url(away),
+                    "home_score": home.get("score") if played else None,
+                    "away_score": away.get("score") if played else None,
+                    "status": _fixture_status(status),
+                    "kickoff": kickoff,
+                }
+            )
+    return fixtures
+
+
 @cached(ttl_seconds=300)
 def find_fixture(league_code, date, home_name, away_name):
     """Resolve a (league, date, home, away) match to a FotMob fixture by
