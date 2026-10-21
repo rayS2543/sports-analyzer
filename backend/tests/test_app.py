@@ -308,6 +308,7 @@ def test_teams_returns_cleaned_team_list(client):
     payload = {
         "teams": [
             {
+                "id": 86,
                 "name": "Real Madrid CF",
                 "shortName": "Real Madrid",
                 "tla": "RMA",
@@ -323,6 +324,7 @@ def test_teams_returns_cleaned_team_list(client):
     assert resp.status_code == 200
     assert resp.get_json() == [
         {
+            "id": 86,
             "name": "Real Madrid CF",
             "shortName": "Real Madrid",
             "tla": "RMA",
@@ -338,7 +340,7 @@ def test_teams_returns_500_on_unexpected_api_response(client):
         resp = client.get("/teams")
 
     assert resp.status_code == 500
-    assert resp.get_json()["error"] == "Unexpected API response"
+    assert resp.get_json()["error"] == "Unexpected football-data.org response."
 
 
 # ---------------------------------------------------------------------------
@@ -470,3 +472,130 @@ def test_form_respects_the_limit_query_param(client):
     data = resp.get_json()
     assert data["matches_considered"] == 1
     assert data["form"] == "D"
+
+
+# ---------------------------------------------------------------------------
+# /teams/detail
+# ---------------------------------------------------------------------------
+
+
+def test_team_detail_requires_name(client):
+    resp = client.get("/teams/detail?league=PD")
+
+    assert resp.status_code == 400
+    assert "name" in resp.get_json()["error"].lower()
+
+
+def test_team_detail_returns_404_for_unknown_club(client):
+    payload = {"teams": [{"id": 1, "name": "Other Club", "shortName": "Other", "tla": "OTH", "crest": "c.png"}]}
+
+    with patch("football_client.requests.get", return_value=FakeResponse(payload)):
+        resp = client.get("/teams/detail?league=PD&name=Real%20Madrid")
+
+    assert resp.status_code == 404
+
+
+def test_team_detail_returns_roster_form_and_fixtures(client):
+    teams_payload = {
+        "teams": [
+            {
+                "id": 86,
+                "name": "Real Madrid CF",
+                "shortName": "Real Madrid",
+                "tla": "RMA",
+                "crest": "https://crests.example/rma.png",
+            }
+        ]
+    }
+    detail_payload = {
+        "id": 86,
+        "name": "Real Madrid CF",
+        "shortName": "Real Madrid",
+        "tla": "RMA",
+        "crest": "https://crests.example/rma.png",
+        "founded": 1902,
+        "venue": "Santiago Bernabéu",
+        "clubColors": "White",
+        "coach": {"name": "Carlo Ancelotti", "nationality": "Italy"},
+        "squad": [
+            {
+                "id": 1,
+                "name": "Courtois",
+                "position": "Goalkeeper",
+                "nationality": "Belgium",
+                "shirtNumber": 1,
+                "dateOfBirth": "1992-05-11",
+            },
+            {
+                "id": 2,
+                "name": "Vinicius Junior",
+                "position": "Offence",
+                "nationality": "Brazil",
+                "shirtNumber": 7,
+                "dateOfBirth": "2000-07-12",
+            },
+        ],
+    }
+    finished_match = make_match("Real Madrid CF", "Barcelona", 2, 1, "2024-01-10")
+    finished_match["homeTeam"]["crest"] = "rma.png"
+    finished_match["awayTeam"]["crest"] = "bar.png"
+    finished_match["competition"] = {"code": "PD"}
+    finished_match["status"] = "FINISHED"
+    upcoming_match = make_match("Sevilla", "Real Madrid CF", None, None, "2024-01-20")
+    upcoming_match["homeTeam"]["crest"] = "sev.png"
+    upcoming_match["awayTeam"]["crest"] = "rma.png"
+    upcoming_match["competition"] = {"code": "PD"}
+    upcoming_match["status"] = "SCHEDULED"
+    standings_payload = {
+        "standings": [
+            {
+                "type": "TOTAL",
+                "table": [
+                    {
+                        "position": 1,
+                        "team": {"name": "Real Madrid CF", "tla": "RMA", "crest": "rma.png"},
+                        "playedGames": 18,
+                        "won": 14,
+                        "draw": 3,
+                        "lost": 1,
+                        "points": 45,
+                        "goalsFor": 40,
+                        "goalsAgainst": 12,
+                        "goalDifference": 28,
+                    }
+                ],
+            }
+        ]
+    }
+
+    def fake_get(url, headers=None, params=None, timeout=10):
+        if url.endswith("/competitions/PD/teams"):
+            return FakeResponse(teams_payload)
+        if url.endswith("/teams/86"):
+            return FakeResponse(detail_payload)
+        if url.endswith("/teams/86/matches"):
+            if params and params.get("status") == "FINISHED":
+                return FakeResponse({"matches": [finished_match]})
+            return FakeResponse({"matches": [upcoming_match]})
+        if url.endswith("/competitions/PD/standings"):
+            return FakeResponse(standings_payload)
+        raise AssertionError(f"Unexpected URL {url}")
+
+    with patch("football_client.requests.get", side_effect=fake_get):
+        resp = client.get("/teams/detail?league=PD&name=Real%20Madrid%20CF")
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["name"] == "Real Madrid CF"
+    assert data["venue"] == "Santiago Bernabéu"
+    assert data["coach"]["name"] == "Carlo Ancelotti"
+    assert data["standing"]["position"] == 1
+    assert data["form"] == "W"
+    assert data["form_points"] == 3
+    assert [p["name"] for p in data["squad"]] == ["Courtois", "Vinicius Junior"]
+    assert data["recent_matches"][0]["score"] == "2 - 1"
+    assert data["upcoming_matches"][0]["home"] == "Sevilla"
+
+    form_resp = client.get("/analytics/form/Real%20Madrid%20CF?league=PD")
+    assert form_resp.status_code == 200
+    assert form_resp.get_json()["form"] == "W"

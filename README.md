@@ -20,6 +20,8 @@ player detail across five top European leagues.
 - **Match detail pages** with real lineups (via FotMob's public match pages,
   no key required) and **player profile pages** (via API-Football).
 - **News feed** per query, pulled from Google News RSS.
+- **Team pages** with season table row, recent form, last starting XI, squad
+  roster, recent results, and upcoming fixtures — plus news.
 - **Team form analytics**, built from a locally persisted match history that
   survives beyond football-data.org's rolling 10-day window.
 - In-memory response caching to stay within free-tier API rate limits.
@@ -97,6 +99,7 @@ The API is available at `http://127.0.0.1:5000`.
 | `GET /matches/today`   | Today's fixtures across every supported league         |
 | `GET /matches?league=` | Recent matches for a league (defaults to La Liga)      |
 | `GET /teams?league=`   | Club directory for a league                            |
+| `GET /teams/detail?league=&name=` | Club profile: squad, form, table row, recent + upcoming matches |
 | `GET /standings?league=` | Current league table                                 |
 | `GET /predictions?league=` | Upcoming fixtures with Elo-based win probabilities |
 | `GET /matches/detail`  | Lineups + player stats for a specific fixture           |
