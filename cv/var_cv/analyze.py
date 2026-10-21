@@ -172,7 +172,12 @@ def track_shot(recs):
         return lambda p: p
 
     warps = [lambda p: p] + [warp(a, b) for a, b in zip(recs, recs[1:])]
-    ids = track.assign_ids([(r["people"].xyxy, w) for r, w in zip(recs, warps)])
+    def kits(r):  # confident kit per box: crops mixing two kits, goalkeepers and officials stay unlabelled
+        m = r["team_model"]
+        return [m.predict(f) if m and f is not None and m.margin(f) > 0.4 and not m.odd(f) else None
+                for f in r["feats"]]
+
+    ids = track.assign_ids([(r["people"].xyxy, w, kits(r)) for r, w in zip(recs, warps)])
     frames = []
     for r, frame_ids in zip(recs, ids):
         H = r["cal"]["H"] if r["cal"]["ok"] else None

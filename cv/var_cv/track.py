@@ -50,41 +50,107 @@ def camera_motion(prev_gray, gray, prev_boxes=()):
     return S @ M @ np.linalg.inv(S)
 
 
-def assign_ids(frames):
-    """frames: list of (boxes Nx4 xyxy, warp) where warp maps Mx2 image points of the previous
-    frame into this frame (camera motion).
-    Returns a list of int arrays: track id (1..n) per box, stable within the sequence."""
-    tracks = {}  # id -> [foot (2,), height, missed]
+VEL_BLEND = 0.5  # weight of the newest displacement in a track's velocity estimate
+COAST_DECAY = 0.8  # velocity kept per sample while a track is unseen or hidden in a merged box
+TEAM_MIN_VOTES = 1  # confident kit readings before a track's team gates its continuation
+TEAM_SHARE = 0.7
+MAX_SCALE = 1.8  # box height ratio a track may change by between samples (a ball box is not a player)
+
+
+def _track_team(votes):
+    n = sum(votes.values())
+    if n < TEAM_MIN_VOTES:
+        return None
+    team, k = max(votes.items(), key=lambda kv: kv[1])
+    return team if k / n >= TEAM_SHARE else None
+
+
+def assign_ids(frames, tangles=True):
+    """frames: list of (boxes Nx4 xyxy, warp[, teams]) where warp maps Mx2 image points of the previous
+    frame into this frame (camera motion) and teams optionally holds a confident kit label ("A"/"B") or
+    None per box.
+    Returns a list of int arrays: track id (1..n) per box, stable within the sequence.
+
+    Identity through tangles, where players overlap and the detector merges or drops boxes:
+    - a track is predicted at its camera-compensated foot plus its recent velocity (a runner who
+      crosses a teammate keeps going, instead of being matched to whoever stands where he last was);
+    - a box that two tracks could both explain (merged players) feeds neither track's position or
+      velocity: both coast through it, so the pair is separated by their motion when the boxes split;
+    - a track whose kit is known never continues onto a box of the other kit, nor onto one of a very
+      different size.
+    tangles=False is the plain association (last camera-compensated position only): in close-ups the
+    boxes are huge and move fast, and velocity extrapolation of a missed track lands on its neighbour.
+    """
+    tracks = {}  # id -> {"foot": (2,), "vel": (2,), "h", "missed", "votes": {team: n}}
     next_id, out = 1, []
-    for boxes, warp in frames:
+    for frame in frames:
+        boxes, warp = frame[0], frame[1]
         boxes = np.asarray(boxes, float).reshape(-1, 4)
+        teams = list(frame[2]) if len(frame) > 2 and frame[2] is not None else [None] * len(boxes)
         feet = np.c_[(boxes[:, 0] + boxes[:, 2]) / 2, boxes[:, 3]]
         heights = np.maximum(boxes[:, 3] - boxes[:, 1], 1.0)
         ids = np.zeros(len(boxes), int)
         tids = list(tracks)
+        moved = pred = None
         if tids:
-            moved = warp(np.array([tracks[t][0] for t in tids]))
-            for t, m in zip(tids, moved):
-                tracks[t][0] = m
+            moved = warp(np.array([tracks[t]["foot"] for t in tids]))
+            pred = moved + np.array([tracks[t]["vel"] for t in tids])  # vel stays 0 unless tangles
         if tids and len(boxes):
-            pred = np.array([tracks[t][0] for t in tids])
-            th = np.array([tracks[t][1] for t in tids])
+            th = np.array([tracks[t]["h"] for t in tids])
             cost = np.linalg.norm(pred[:, None] - feet[None], axis=2) / np.maximum(th[:, None], heights[None])
+            for r, t in enumerate(tids if tangles else ()):
+                kit = _track_team(tracks[t]["votes"])
+                for c, team in enumerate(teams):
+                    if (kit and team and kit != team) or max(th[r], heights[c]) > MAX_SCALE * min(th[r], heights[c]):
+                        cost[r, c] = np.inf
             rows, cols = linear_sum_assignment(np.where(cost > GATE, 1e6, cost))
             for r, c in zip(rows, cols):
                 if cost[r, c] <= GATE:
                     ids[c] = tids[r]
+            # a box holding an established, just-seen track that found no box of its own is a merge of
+            # players: it and the track that took the box both coast through it
+            matched = set(ids[ids > 0])
+            hidden = set()
+            for c in range(len(boxes) if tangles else 0):
+                if not ids[c]:
+                    continue
+                x1, y1, x2, y2 = boxes[c]
+                w, h = x2 - x1, y2 - y1
+                for r, t in enumerate(tids):
+                    st = tracks[t]
+                    px, py = pred[r]
+                    if t not in matched and st["n"] >= 2 and st["missed"] == 0 and cost[r, c] <= GATE \
+                            and x1 - 0.2 * w <= px <= x2 + 0.2 * w and y1 + 0.3 * h <= py <= y2 + 0.25 * h:
+                        hidden |= {t, int(ids[c])}
+        else:
+            hidden = set()
         seen = set(ids[ids > 0])
-        for t in tids:
-            if t in seen:
-                continue
-            tracks[t][2] += 1
-            if tracks[t][2] > MAX_MISSED:
-                del tracks[t]
+        for k, t in enumerate(tids):
+            st = tracks[t]
+            if t in hidden or t not in seen:  # coast
+                st["foot"], st["vel"] = pred[k], st["vel"] * COAST_DECAY
+                if t not in seen:
+                    st["missed"] += 1
+                    if st["missed"] > MAX_MISSED:
+                        del tracks[t]
         for c in range(len(boxes)):
-            if ids[c] == 0:
+            t = int(ids[c])
+            if t and t in hidden:
+                continue
+            if t:
+                st = tracks[t]
+                k = tids.index(t)
+                blend = 1.0 if st["n"] == 1 else VEL_BLEND  # the first displacement is all we know
+                if tangles:
+                    st["vel"] = (1 - blend) * st["vel"] + blend * (feet[c] - moved[k])
+                st["foot"], st["h"], st["missed"] = feet[c], heights[c], 0
+                st["n"] += 1
+            else:
                 ids[c], next_id = next_id, next_id + 1
-            tracks[int(ids[c])] = [feet[c], heights[c], 0]
+                t = int(ids[c])
+                tracks[t] = {"foot": feet[c], "vel": np.zeros(2), "h": heights[c], "missed": 0, "n": 1, "votes": {}}
+            if teams[c]:
+                tracks[t]["votes"][teams[c]] = tracks[t]["votes"].get(teams[c], 0) + 1
         out.append(ids)
     return out
 

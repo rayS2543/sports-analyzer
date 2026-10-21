@@ -120,3 +120,48 @@ def test_tracking_follows_players_through_a_pan():
     boxes1 = boxes0[::-1] + np.r_[pan, pan] + [3, 0, 3, 0]
     ids = track.assign_ids([(boxes0, lambda p: p), (boxes1, lambda p: p + pan)])
     assert list(ids[0]) == [1, 2] and list(ids[1]) == [2, 1]
+
+
+
+def _box(x, y, w=30, h=80):
+    return [x - w / 2, y - h, x + w / 2, y]
+
+
+def _track(frames):
+    return track.assign_ids([(np.array(b, float).reshape(-1, 4), lambda p: p, *t) for b, *t in frames])
+
+
+def test_runners_who_cross_keep_their_ids():
+    # A runs right at 25 px/sample, B left at 15, level with each other: they swap sides between two
+    # samples, and nearest-last-position matching hands each the other's box
+    ids = _track([([_box(100 + 25 * k, 300), _box(400 - 15 * k, 300)],) for k in range(14)])
+    assert list(ids[-1]) == list(ids[0])
+
+
+def test_players_hidden_in_one_merged_box_keep_their_ids():
+    # A overtakes B (vA 25, vB 5 px/sample, 15 px apart in depth); for two samples the detector returns
+    # one wide box. Snapping to that box would leave A behind B's old position when they separate.
+    def row(k):
+        a, b = 20 + 25 * k, 90 + 5 * k
+        return [[min(a, b) - 15, 220, max(a, b) + 15, 315]] if k in (3, 4) else [_box(a, 300), _box(b, 315)]
+
+    ids = _track([(row(k),) for k in range(12)])
+    assert list(ids[-1]) == list(ids[0])
+
+
+def test_a_track_never_continues_onto_the_other_kit_or_a_much_smaller_box():
+    box = [_box(200, 300)]
+    ids = _track([(box, ["A"]), (box, ["B"])])
+    assert ids[0][0] != ids[1][0]
+    ids = _track([(box,), ([_box(200, 300, 8, 20)],)])  # a ball-sized box is not the player
+    assert ids[0][0] != ids[1][0]
+    ids = _track([(box, ["A"]), (box, ["A"]), (box, [None])])  # unlabelled blur does not break a track
+    assert ids[0][0] == ids[2][0]
+
+
+def test_plain_association_has_no_velocity_or_kit_gates():
+    # close-ups use tangles=False: runners crossing between samples are matched to the nearest last position
+    frames = [(np.array([_box(100 + 25 * k, 300), _box(400 - 15 * k, 300)], float), lambda p: p) for k in range(14)]
+    ids = track.assign_ids(frames, tangles=False)
+    assert list(ids[-1]) != list(ids[0])
+    assert list(track.assign_ids(frames)[-1]) == list(track.assign_ids(frames)[0])
