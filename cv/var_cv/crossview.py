@@ -8,6 +8,14 @@ A close-up shows only parallel lines or an arc sliver, which cannot fix a homogr
 shot of the same moment already knows every player's pitch position; the replay camera is solved from
 those positions seen in the replay, plus whatever paint is visible, plus the replay's own camera motion.
 
+Painted-line start (solve_lines, tried first). When the replay shows >= 2 lines of each pitch direction (goal line,
+6-yard box, penalty area), paintcam calibrates each frame from them alone (every frame must pass pitch.passes);
+the live players only pick the end of the pitch (the paint is symmetric under a half turn) and confirm the camera
+(MIN_MATCH of the replay people within MATCH_M of a distinct live player at the best time map), by frame-wise
+Hungarian matching that uses neither identities nor kit labels. The time map is NOT fitted there (a near-static
+scrum does not determine it): speed / offset stay None, source "painted_lines", shot["speed_unobserved"].
+Everything below is the player-feet solver, the fallback.
+
 Model. One broadcast camera that pans, tilts and zooms about a FIXED centre C (shared by the shot), with an
 optional principal-point offset pp (shared, prior sigma SIGMA_PP_PX: digitally cropped replays) and per frame
 a rotation R_t and focal length f_t. Pitch frame z points into the grass (the camera sits at z < 0).
@@ -58,11 +66,12 @@ from pathlib import Path  # noqa: E402
 
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
+from scipy.optimize import linear_sum_assignment  # noqa: E402
 from scipy.optimize import least_squares  # noqa: E402
 from scipy.optimize._numdiff import approx_derivative  # noqa: E402
 from scipy.spatial.transform import Rotation  # noqa: E402
 
-from . import ball3d, pitch, reid, temporal, track  # noqa: E402
+from . import ball3d, paintcam, pitch, reid, temporal, track  # noqa: E402
 
 cv2.setNumThreads(0)  # this OpenCV parallelises with GCD: 0 is the only effective cap (see fouls.py)
 
@@ -1196,7 +1205,168 @@ def feet_failure(feet_chi, matched_chi, n_obs, n_matched, people_matched, people
     return f"{head} ({detail}; wrong identities, or live tracks that swap people)"
 
 
+# ------------------------------------------------------------------ calibration from the painted lines
+
+LINE_FRAMES = 8          # frames around the reference tried for a painted-line camera
+S_LINE = np.array([0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0])  # replays can be many times slower than play
+D_SCAN = 3.0             # s around the anchor scanned for the offset (anchors are read off the frames)
+SYNC_SIGMA_M = 0.8       # kernel of the frame-wise matching score
+MATCH_M = 2.0            # a replay person counts as on a live player within this
+MIN_MATCH = 0.4          # share of replay people on a distinct live player (at the best time map) that confirms a pitch end
+END_CONTRAST = 2.0       # best end's soft match count over the other end's
+
+
+def _people_pitch(shot, T, G):
+    """Replay people of every frame in the pitch frame through the reference-image camera G: {frame: Nx2}."""
+    Gi = np.linalg.inv(G)
+    out = {}
+    for i, ob in enumerate(shot.frames):
+        if T[i] is not None and ob["people"]:
+            out[i] = pitch.project(Gi, pitch.project(T[i], np.array([p["foot"] for p in ob["people"]])))
+    return out
+
+
+def _sync_scan(shot, anchor, P, live_pos):
+    """Frame-wise soft count of replay people on live players (Hungarian on pitch distance, kernel SYNC_SIGMA_M)
+    for every speed of S_LINE and offset around the anchor. Identities and teams are not used, so fragmented
+    tracks and wrong kit labels cannot hurt it. Returns (offsets, speeds x offsets counts, matches within MATCH_M
+    at the best cell, people at the best cell)."""
+    offs = np.arange(-D_SCAN, D_SCAN + 1e-9, 0.2)
+    out = np.zeros((len(S_LINE), len(offs)))
+    for a, sp in enumerate(S_LINE):
+        for b, d in enumerate(offs):
+            out[a, b] = _match_frames(shot, anchor, P, live_pos, sp, d)[0]
+    a, b = np.unravel_index(int(np.argmax(out)), out.shape)
+    _, near, people = _match_frames(shot, anchor, P, live_pos, S_LINE[a], offs[b])
+    return offs, out, near, people
+
+
+def _match_frames(shot, anchor, P, live_pos, sp, d):
+    soft = near = people = 0
+    for i, pts in P.items():
+        Q = live_pos(anchor["live_t"] + d + sp * (shot.t[i] - anchor["replay_t"]))
+        people += len(pts)
+        if len(Q) < 3:
+            continue
+        D = np.linalg.norm(pts[:, None] - Q[None], axis=2)
+        r, c = linear_sum_assignment(D)
+        soft += float(np.exp(-0.5 * (D[r, c] / SYNC_SIGMA_M) ** 2).sum())
+        near += int((D[r, c] <= MATCH_M).sum())
+    return soft, near, people
+
+
+def solve_lines(frames, size, live, anchors):
+    """Calibrate the replay frames from their own painted lines (paintcam), then use the live players only to
+    choose the end of the pitch and to confirm the camera: the painted lines cannot tell the two ends apart, and
+    a calibration that puts the replay people where no live player stands is rejected. No identities, no kit
+    labels, no speed: the time map is not fitted (speed stays None; it is reported only as the best frame-wise
+    scan). Each frame must pass the detector's own line checks (pitch.passes), starting from the chained
+    camera of its neighbour, so no gate is loosened."""
+    n = len(frames)
+    report = {"status": "failed", "failure": None, "notes": [], "speed": None, "offset_s": None, "sync_sigma_s": None,
+              "speed_sigma": None, "camera_centre": None, "matched": [], "fixed_centre_residual_px": None,
+              "frames": n, "calibrated_frames": 0, "source": "painted_lines"}
+    if not anchors or not live:
+        return _fail_all(n, "no sync anchor or no calibrated live positions", report)
+    shot = Shot(frames, size, live, use_lines=False)
+    anchor = anchors[0]
+    ref = int(np.argmin(np.abs(shot.t - anchor["replay_t"])))
+    T = chain(shot.motions, ref)
+    order = sorted((i for i in range(n) if T[i] is not None and frames[i].get("masks") is not None),
+                   key=lambda i: abs(i - ref))[:LINE_FRAMES]
+    cams, seed = [], None
+    for i in order:
+        cams = paintcam.fit_frame(frames[i]["masks"], size)
+        if cams:
+            seed = i
+            break
+    if not cams:
+        return _fail_all(n, "no painted-line camera (needs >= 2 lines of each pitch direction that pass the line checks)", report)
+    report["notes"].append(f"painted lines: {len(cams)} candidate cameras from frame t={shot.t[seed]:.2f} s "
+                           f"(support {', '.join(f'{c['support']:.2f}' for c in cams)})")
+    gids = list(live)
+
+    def live_pos(tau):
+        Q = np.array([live_at(live[g], tau)[0][0] for g in gids])
+        return Q[np.isfinite(Q).all(1)]
+
+    best = {}  # end -> (soft count, camera, near, people, scan cell)
+    for c in cams:
+        end = "b" if c["labels"][-1] == "rot" else "a"
+        G = T[seed] @ c["G"]
+        P = _people_pitch(shot, T, G)
+        offs, sc, near, people = _sync_scan(shot, anchor, P, live_pos)
+        a, b = np.unravel_index(int(np.argmax(sc)), sc.shape)
+        if end not in best or sc.max() > best[end][0]:
+            best[end] = (float(sc.max()), c, near, people, (float(S_LINE[a]), float(offs[b])))
+    ranked = sorted(best.values(), key=lambda r: -r[0])
+    top, cam, near, people, (sp, d) = ranked[0]
+    other = ranked[1][0] if len(ranked) > 1 else 0.0
+    report["notes"].append(f"pitch end by the live players: soft matches {top:.0f} vs {other:.0f} at the other end; best "
+                           f"frame-wise time map s={sp:g}, offset {d:+.1f} s (a scan, not a fit: speed is not observable "
+                           "from a near-static scrum)")
+    report["line_families"] = ["x", "y"]
+    report["match_fraction"] = round(near / max(people, 1), 3)
+    if near < MIN_MATCH * people:
+        return _fail_all(n, f"the painted-line camera is not confirmed by the live players: {near} of {people} replay "
+                            f"people (all frames) are within {MATCH_M:g} m of a distinct live player at the best time map", report)
+    if top < END_CONTRAST * other:
+        return _fail_all(n, "the painted lines fit both ends of the pitch and the live players do not separate them "
+                            f"({top:.0f} vs {other:.0f} soft matches)", report)
+    # every frame: refine from the neighbour's camera, keep it only if it passes the detector's own checks
+    none = np.zeros((0, 2))
+    G0 = {seed: T[seed] @ cam["G"]}  # reference-image camera
+    results = [{"ok": False, "failure": "no camera-motion link to a frame with painted lines"} for _ in range(n)]
+    Gimg = {}
+    for step in (1, -1):
+        prev = seed
+        Gprev = np.linalg.inv(T[seed]) @ G0[seed]
+        Gimg[seed] = cam["G"]
+        for i in range(seed + step, n if step > 0 else -1, step):
+            if T[i] is None or T[prev] is None:
+                break
+            Gi = np.linalg.inv(T[i]) @ T[prev] @ Gprev
+            m = frames[i].get("masks")
+            r = pitch.refine(np.linalg.inv(Gi / Gi[2, 2]), m, none, none) if m is not None else None
+            if r is not None and pitch.passes(r):
+                Gimg[i] = np.linalg.inv(r["H"])
+                Gprev, prev = Gimg[i] / Gimg[i][2, 2], i
+                results[i] = {"ok": True, "G": Gprev, "sigma": r["sigma"], "p90_m": r["uncertainty_m"],
+                              "line_support": r["support"], "line_fit_residual_m": r["error_m"], "failure": None}
+            else:
+                why = "no painted-line detail" if r is None else (
+                    f"line check failed (support {r['support']:.2f}, worst line {r['worst']:.2f}, "
+                    f"position uncertainty {r['uncertainty_m']:.2f} m)")
+                results[i] = {"ok": False, "G": Gi / Gi[2, 2], "failure": why}
+                Gprev, prev = Gi / Gi[2, 2], i  # keep chaining through a bad frame
+    r0 = pitch.refine(np.linalg.inv(cam["G"]), frames[seed]["masks"], none, none)
+    results[seed] = {"ok": True, "G": cam["G"] / cam["G"][2, 2], "sigma": r0["sigma"], "p90_m": r0["uncertainty_m"],
+                     "line_support": r0["support"], "line_fit_residual_m": r0["error_m"], "failure": None}
+    report["frame_results"] = results
+    report["calibrated_frames"] = sum(r["ok"] for r in results)
+    report["status"] = "done" if report["calibrated_frames"] else "failed"
+    if not report["calibrated_frames"]:
+        report["failure"] = Counter(r["failure"] for r in results).most_common(1)[0][0]
+    return report
+
+
 def solve(frames, size, live, anchors, use_lines=True, loo=True):
+    """Painted lines first (solve_lines), the player-feet solver when they give no confirmed camera. When both
+    fail, the line report is kept if the lines did give a camera (its reason is the more informative one)."""
+    if not use_lines:
+        return _solve_feet(frames, size, live, anchors, use_lines, loo)
+    rep = solve_lines(frames, size, live, anchors)
+    if rep["status"] == "done":
+        return rep
+    feet = _solve_feet(frames, size, live, anchors, use_lines, loo)
+    feet["notes"] = ["painted-line start: " + str(rep.get("failure"))] + rep["notes"] + feet["notes"]
+    if feet["status"] == "done" or not any("candidate cameras" in n for n in rep["notes"]):
+        return feet
+    rep["notes"].append("player-feet solver also failed: " + str(feet.get("failure")))
+    return rep
+
+
+def _solve_feet(frames, size, live, anchors, use_lines=True, loo=True):
     """Pure core (no I/O). frames: replay shot samples [{t, people: [{track, team, foot, h}], masks, motion}].
     Returns a report dict with per-frame "frame_results" [{ok, failure, G (pitch->image), sigma, p90_m, ...}]."""
     n = len(frames)
@@ -1566,13 +1736,14 @@ def write_back(replay, shot_id, recs, report, speed_meta, live_ref, video):
         ok = bool(r.get("ok"))
         G = r.get("G")
         f["calibration"] = {
-            "ok": ok, "source": "cross_view" if ok else None,
+            "ok": ok, "source": report.get("source", "cross_view") if ok else None,
             "homography": [[float(v) for v in row] for row in G] if ok else None,
             "reprojection_error_m": round(r["p90_m"], 3) if ok else None,
             "line_fit_residual_m": r.get("line_fit_residual_m") if ok else None,
             "keypoints": 0, "line_support": r.get("line_support", 0.0), "keypoint_loo_m": None,
             "failure": None if ok else r.get("failure"),
-            "cross_view": dict(cv_meta, point_residual_px=r.get("point_residual_px"))}
+            "cross_view": dict(cv_meta, point_residual_px=r.get("point_residual_px"))
+            if report.get("source", "cross_view") == "cross_view" else None}
         f["live_t"] = round(r["live_t"], 3) if r.get("live_t") is not None and report["speed"] is not None else None
         H = np.linalg.inv(G) if ok else None
         sig = r.get("sigma") if ok else None
@@ -1609,6 +1780,8 @@ def write_back(replay, shot_id, recs, report, speed_meta, live_ref, video):
     n_ok = sum(bool(r.get("ok")) for r in res)
     shot.update(calibrated_ratio=round(n_ok / max(1, len(res)), 3), usable=bool(n_ok / max(1, len(res)) >= 0.5 and n_ok >= 2),
                 playback_speed=report["speed"] or shot.get("playback_speed", 1.0), replay_of=speed_meta)
+    if report.get("source") == "painted_lines":
+        shot["speed_unobserved"] = True  # calibrated from its own lines: speeds from this replay assume normal playback
     for s in replay["shots"]:
         s.setdefault("playback_speed", 1.0)
         s.setdefault("replay_of", None)
@@ -1628,7 +1801,7 @@ def write_back(replay, shot_id, recs, report, speed_meta, live_ref, video):
 
 
 def report_json(report, shot_id, live_ref):
-    keep = ("status", "failure", "speed", "speed_sigma", "offset_s", "sync_sigma_s", "calibrated_frames", "frames",
+    keep = ("status", "failure", "source", "match_fraction", "speed", "speed_sigma", "offset_s", "sync_sigma_s", "calibrated_frames", "frames",
             "matched", "camera_centre", "camera_centre_sigma_m", "principal_point_offset_px", "fixed_centre_residual_px", "notes", "anchor",
             "leave_one_out", "line_families", "matched_span_m", "live_position_floor_m", "var_factor", "feet_chi2_per_observation")
     out = {k: report.get(k) for k in keep}
@@ -1690,7 +1863,7 @@ def overlays(debug_dir, video, replay, shot_id, report, recs, live):
         if not ok:
             continue
         pitch.draw_pitch(img, np.linalg.inv(r["G"]))
-        for g, tr in live.items():
+        for g, tr in (live.items() if r.get("live_t") is not None else ()):
             xy, _ = live_at(tr, r["live_t"])
             if np.isnan(xy).any():
                 continue
@@ -1701,7 +1874,7 @@ def overlays(debug_dir, video, replay, shot_id, report, recs, live):
         for p in rec["people"]:
             cv2.drawMarker(img, (int(p["foot"][0]), int(p["foot"][1])), (0, 255, 255), cv2.MARKER_CROSS, 14, 2)
             cv2.putText(img, str(p["track"]), (int(p["foot"][0]) - 20, int(p["foot"][1]) + 20), 0, 0.5, (0, 255, 255), 1)
-        txt = (f"t={rec['t']:.2f} live={r['live_t']:.2f} " + ("OK" if r.get("ok") else "FAIL: " + str(r.get("failure")))
+        txt = (f"t={rec['t']:.2f} " + ("OK" if r.get("ok") else "FAIL: " + str(r.get("failure")))
                + (f" p90={r['p90_m']:.2f}m" if r.get("p90_m") is not None else ""))
         cv2.putText(img, txt[:110], (10, 30), 0, 0.6, (0, 0, 255) if not r.get("ok") else (0, 255, 0), 2)
         cv2.imwrite(str(Path(debug_dir) / f"cv_{rec['t']:.3f}.jpg"), cv2.resize(img, (960, 540)))
