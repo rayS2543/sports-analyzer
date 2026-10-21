@@ -187,8 +187,15 @@ def test_localisation_quality_uses_measured_error():
 
 
 def test_opencv_threads_are_capped():
-    import cv2
-    assert cv2.getNumThreads() == 1  # GCD backend: 0 is the only effective cap (see fouls.py)
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    # a fresh interpreter: another test module may have imported analyze, whose setNumThreads(4) the GCD backend ignores
+    env = {**os.environ, "PYTHONPATH": str(Path(fouls.__file__).parent.parent)}
+    out = subprocess.run([sys.executable, "-c", "import cv2; from var_cv import fouls; print(cv2.getNumThreads())"],
+                         capture_output=True, text=True, check=True, env=env)
+    assert out.stdout.split()[-1] == "1"  # GCD backend: 0 is the only effective cap (see fouls.py)
     cap = fouls.open_video(__file__)  # not a video: must still build without raising
     assert not cap.isOpened()
 
@@ -231,6 +238,13 @@ def test_uncalibrated_candidates_need_overlap_at_similar_depth():
     assert [c["track_ids"] for c in cands] == [[1, 2]]
 
 
+def test_people_cut_by_the_frame_edge_are_not_candidates():
+    a = player(1, "A", None, None, [100, 100, 140, 200])
+    cut = dict(player(2, "B", None, None, [120, 105, 160, 205]), clipped=True)
+    cands, _ = fouls.find_candidates({"frames": [frame(1.0, [a, cut], ok=False)]})
+    assert cands == []
+
+
 def test_dogso_factors_count_defenders_in_corridor(broadcast):
     _, G = broadcast
     challenger = player(5, "B", 80, 34, None)
@@ -262,6 +276,14 @@ def test_interp_between_samples_and_gap_limit():
     assert fouls._interp(track, 2.0, "bbox") is None
     gap = [(1.0, {"x": 0}, None), (3.0, {"x": 10}, None)]
     assert fouls._interp(gap, 2.0, "x") is None  # never bridge a long gap
+
+
+def test_a_track_box_is_not_held_far_past_its_first_or_last_sample():
+    # before a track first appears its box is unknown: holding it for a quarter second puts it on whoever
+    # stands there now (a referee beside the player)
+    track = [(1.0, {"bbox": [0, 0, 10, 10]}, None), (1.1, {"bbox": [1, 0, 11, 10]}, None)]
+    assert fouls._interp(track, 0.95, "bbox") == [0, 0, 10, 10]
+    assert fouls._interp(track, 0.8, "bbox") is None and fouls._interp(track, 1.3, "bbox") is None
 
 
 def test_indicator_not_observable_has_no_value():

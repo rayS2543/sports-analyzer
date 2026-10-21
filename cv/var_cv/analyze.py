@@ -172,9 +172,9 @@ def track_shot(recs):
         return lambda p: p
 
     warps = [lambda p: p] + [warp(a, b) for a, b in zip(recs, recs[1:])]
-    def kits(r):  # confident kit per box: crops mixing two kits, goalkeepers and officials stay unlabelled
+    def kits(r):  # confident kit per box ("X" = neither team's: official or keeper); crops mixing two kits stay unlabelled
         m = r["team_model"]
-        return [m.predict(f) if m and f is not None and m.margin(f) > 0.4 and not m.odd(f) else None
+        return [None if not m or f is None else "X" if m.odd(f) else m.predict(f) if m.margin(f) > 0.4 else None
                 for f in r["feats"]]
 
     ids = track.assign_ids([(r["people"].xyxy, w, kits(r)) for r, w in zip(recs, warps)])
@@ -239,18 +239,22 @@ def near_goal(x, y):
 
 
 def assign_tracks(recs, tracked, model):
-    """Per-track role, team (majority vote over the shot) and team_score (vote share).
+    """Per-track role, team (weighted vote over the shot) and team_score (vote share).
 
     Goalkeepers: detector class, or a kit unlike both teams on a track that stays near a goal.
     A kit unlike both teams elsewhere is a match official. Referees never get a team.
+    Crops of overlapping boxes show two shirts and count teams.CROWD_WEIGHT; a track whose votes are not
+    decisive (teams.KIT_SHARE: a keeper in a light kit, a blurred or half-hidden player) has no team.
     """
-    roles, feats, pos = {}, {}, {}
+    roles, feats, wts, pos = {}, {}, {}, {}
     for rec, pairs in zip(recs, tracked):
         H = rec["cal"]["H"] if rec["cal"]["ok"] else None
+        crowd = teams.crowded(rec["people"].xyxy)
         for i, tid in pairs:
             roles.setdefault(tid, []).append(int(rec["people"].class_id[i]))
             if rec["feats"][i] is not None:
                 feats.setdefault(tid, []).append(rec["feats"][i])
+                wts.setdefault(tid, []).append(teams.CROWD_WEIGHT if crowd[i] else 1.0)
             if H is not None:
                 x1, _, x2, y2 = rec["people"].xyxy[i]
                 p = to_pitch(H, ((x1 + x2) / 2, y2))
@@ -266,10 +270,12 @@ def assign_tracks(recs, tracked, model):
             p = np.mean(pos[tid], axis=0) if tid in pos else None
             role[tid] = "goalkeeper" if p is not None and near_goal(*p) else "referee"
         if role[tid] == "player":
-            clear = [x for x in f if model.margin(x) > 0.15] or f  # ambiguous crops (occlusion, blur) don't vote
-            votes = Counter(model.predict(x) for x in clear)
-            team[tid], n = votes.most_common(1)[0]
-            score[tid] = n / len(clear)
+            usual = [(x, w) for x, w in zip(f, wts[tid]) if not model.odd(x)]  # odd-kit (official) crops never vote
+            clear = [(x, w) for x, w in usual if model.margin(x) > 0.15] or usual  # ambiguous crops don't vote
+            votes = Counter()
+            for x, w in clear:
+                votes[model.predict(x)] += w
+            team[tid], score[tid] = teams.decisive(votes)
     gk_votes = {}
     for rec, pairs in zip(recs, tracked):  # keepers: nearest team block along the pitch (image x if uncalibrated)
         H = rec["cal"]["H"] if rec["cal"]["ok"] else None

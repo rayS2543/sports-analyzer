@@ -108,6 +108,35 @@ def fit(features, weights=None):
     return TeamModel.fit(features, weights) if len(features) >= 6 else None
 
 
+CROWD_OVERLAP = 0.3  # a box overlapping another person's by this much (of the smaller box) holds two shirts
+CROWD_WEIGHT = 0.25  # ... so its kit reading counts this much in a track's team vote
+KIT_SHARE = 0.7      # a team needs this share of the weighted votes, else the kit is ambiguous (null)
+
+
+def crowded(boxes):
+    """Per box (xyxy): does it overlap another by CROWD_OVERLAP of the smaller one? Its shirt crop then shows two people."""
+    boxes = np.asarray(boxes, float).reshape(-1, 4)
+    out = []
+    for i, a in enumerate(boxes):
+        hit = False
+        for j, b in enumerate(boxes):
+            w, h = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
+            small = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+            hit = hit or (j != i and w > 0 and h > 0 and w * h > CROWD_OVERLAP * max(small, 1e-6))
+        out.append(hit)
+    return out
+
+
+def decisive(votes):
+    """(team or None, vote share) from weighted votes {"A": w, "B": w}: a team only when it holds KIT_SHARE of them,
+    so a track whose kit reads both ways (hidden behind another player, motion blur) gets no team, not a coin flip."""
+    total = sum(votes.values())
+    if not total:
+        return None, 0.0
+    team, w = max(votes.items(), key=lambda kv: kv[1])
+    return (team if w >= KIT_SHARE * total else None), w / total
+
+
 def cap_per_frame(players, min_sep_m=0.5):
     """Enforce football's head count on one frame's player dicts; returns the kept list.
 

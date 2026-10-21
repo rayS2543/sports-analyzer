@@ -68,7 +68,9 @@ KP_CONF = 0.5          # keypoint visibility threshold
 CONTACT_M = 1.2        # ground distance for a contact candidate
 APART_M = 2.0          # tracked ground positions further apart than this cannot be touching (depth illusion)
 MAX_CANDIDATES = 6
+HOLD_S = 0.12         # how long past a track's first/last sample its box is still used (~1 sample interval)
 PAD_S = 0.4            # pose span around the candidate
+EDGE_PX = 2            # a close-up person whose box touches the frame's left, top or right edge is partly out of shot
 MERGE_GAP_S = 0.5      # candidate hits of one pair closer than this are one candidate
 CROP_TARGET_PX = 512   # crops are upscaled so the pair fills the pose model's input
 CLOSEUP_MAX_PLAYERS = 6  # uncalibrated shots tracking fewer people per frame get a pose-model person pass
@@ -329,7 +331,7 @@ def _interp(track, t, key, max_gap=0.25):
         w = 0 if t1 == t0 else (t - t0) / (t1 - t0)
         return (np.asarray(a, float) * (1 - w) + np.asarray(b, float) * w).tolist()
     near = min(vals, key=lambda v: abs(v[0] - t))
-    return near[1] if abs(near[0] - t) <= max_gap else None
+    return near[1] if abs(near[0] - t) <= HOLD_S else None  # beyond the last sample the box is a guess: in a crowd it lands on a neighbour
 
 
 def _xy(track, t):
@@ -373,7 +375,8 @@ def find_candidates(analysis, contact_m=CONTACT_M, max_candidates=MAX_CANDIDATES
     team = {k: v.most_common(1)[0][0] for k, v in votes.items()}
     for f in analysis["frames"]:
         ok = bool((f.get("calibration") or {}).get("ok"))
-        players = [p for p in f.get("players") or [] if p.get("role") in ("player", "goalkeeper") and (f["shot"], p["track_id"]) in team]
+        players = [p for p in f.get("players") or [] if p.get("role") in ("player", "goalkeeper") and (f["shot"], p["track_id"]) in team
+                   and not p.get("clipped")]  # cut by the frame edge: a half-visible person, its pose and kit are unreliable
         for i, a in enumerate(players):
             for b in players[i + 1:]:
                 if team[(f["shot"], a["track_id"])] == team[(f["shot"], b["track_id"])]:
@@ -1347,23 +1350,18 @@ def clear_kit(model, feature):
     return model.predict(feature)
 
 
-CROWD_OVERLAP = 0.3  # a box overlapping another person's by this much (of the smaller box) holds two shirts
-CROWD_WEIGHT = 0.25  # ... so its kit reading counts this much in a track's team vote
-KIT_SHARE = 0.7      # a team needs this share of the weighted votes, else the kit is ambiguous (null)
-
-
 def team_votes(recs, ids, model):
-    """track id -> 'A' / 'B' / absent: weighted majority of the clear shirt readings along the track. A person
-    standing behind another reads the front person's kit; those crops count CROWD_WEIGHT, and a track whose
-    votes are not decisive (KIT_SHARE) gets no team rather than a coin flip."""
+    """track id -> 'A' / 'B' / absent: teams.decisive over the clear shirt readings along the track, crowded crops
+    (a person standing behind another reads the front person's kit) at teams.CROWD_WEIGHT."""
+    from . import teams
     votes = {}
     for (_, boxes, feats, _), tids in zip(recs, ids):
+        crowd = teams.crowded(boxes)
         for i, (f, tid) in enumerate(zip(feats, tids)):
             kit = clear_kit(model, f)
             if kit:
-                crowded = any(j != i and overlap(boxes[i], boxes[j]) > CROWD_OVERLAP for j in range(len(boxes)))
-                votes.setdefault(int(tid), Counter())[kit] += CROWD_WEIGHT if crowded else 1.0
-    return {tid: v.most_common(1)[0][0] for tid, v in votes.items() if v.most_common(1)[0][1] >= KIT_SHARE * sum(v.values())}
+                votes.setdefault(int(tid), Counter())[kit] += teams.CROWD_WEIGHT if crowd[i] else 1.0
+    return {tid: t for tid, v in votes.items() if (t := teams.decisive(v)[0])}
 
 
 def closeup_analysis(analysis, shots, cap, fps, model, device, sample_hz=10, clip_model=None):
@@ -1375,6 +1373,7 @@ def closeup_analysis(analysis, shots, cap, fps, model, device, sample_hz=10, cli
     shots are uncalibrated."""
     from . import teams, track
     frames, per_shot = [], []
+    size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
     for shot in shots:
         # the analysis' own sampled frames, so close-up people line up with its frames (crossview pairs them)
         idx = sorted({round(f["t"] * fps) for f in analysis["frames"] if f["shot"] == shot["id"]})
@@ -1408,6 +1407,7 @@ def closeup_analysis(analysis, shots, cap, fps, model, device, sample_hz=10, cli
                            "ball": b["ball"] if b and abs(b["t"] - t) < 0.06 else None,
                            "players": [{"track_id": CLOSEUP_ID_BASE + int(tid), "team": team.get(int(tid)), "role": "player",
                                         "x": None, "y": None, "bbox": [round(float(v), 1) for v in box], "source": "closeup_pose",
+                                        "clipped": bool(box[0] <= EDGE_PX or box[1] <= EDGE_PX or box[2] >= size[0] - EDGE_PX),
                                         "ankles": [[round(float(a[0]), 1), round(float(a[1]), 1), round(float(a[2]), 3)]
                                                    for a in k[[K["lank"], K["rank"]]]]}
                                        for box, tid, k in zip(boxes, tids, kd)]})
