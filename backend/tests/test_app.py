@@ -88,19 +88,151 @@ def test_matches_skips_fixtures_without_a_final_score(client):
     assert data[0]["home"] == "Sevilla"
 
 
+def _route_today(url, payload):
+    """Dispatch a fake football-data.org response by which feed was requested."""
+
+    def fake_get(url_called, **kwargs):
+        if url_called.endswith("/competitions/CL/matches"):
+            body = payload.get("cl", {"matches": []})
+        else:
+            body = payload.get("domestic", {"matches": []})
+        status = payload.get("status", {}).get("cl" if url_called.endswith("/competitions/CL/matches") else "domestic", 200)
+        return FakeResponse(body, status_code=status)
+
+    return fake_get
+
+
 def test_matches_today_uses_one_combined_request_and_tags_each_league(client):
     pl = dict(make_match("Arsenal", "Chelsea", None, None, "2026-10-12"), competition={"code": "PL"}, status="TIMED")
     pd = dict(make_match("Sevilla", "Valencia", 1, 0, "2026-10-12"), competition={"code": "PD"}, status="FINISHED")
+    pl["utcDate"] = "2026-10-12T14:00:00Z"
+    pd["utcDate"] = "2026-10-12T20:00:00Z"
 
-    with patch("football_client.requests.get", return_value=FakeResponse({"matches": [pl, pd]})) as upstream:
-        resp = client.get("/matches/today")
+    with (
+        patch("football_client.requests.get", side_effect=_route_today("", {"domestic": {"matches": [pl, pd]}})) as upstream,
+        patch("routes.football.champions_league_fixtures", return_value=[]),
+    ):
+        resp = client.get("/matches/today?date=2026-10-12")
 
-    assert upstream.call_count == 1
+    assert upstream.call_count == 2
+    domestic_params = upstream.call_args_list[0].kwargs["params"]
+    assert domestic_params["competitions"] == "PD,PL,SA,BL1,FL1,CL"
+    assert domestic_params["dateFrom"] == "2026-10-12"
+    assert upstream.call_args_list[1].args[0].endswith("/competitions/CL/matches")
     assert [(m["league_code"], m["league_name"]) for m in resp.get_json()] == [("PL", "Premier League"), ("PD", "La Liga")]
 
 
+def test_matches_today_merges_champions_league_fixtures(client):
+    earlier = dict(make_match("PSV", "Sporting CP", 2, 2, "2026-09-01"), status="FINISHED")
+    live = dict(make_match("Arsenal", "Bayern Munich", 1, 0, "2026-10-21"), status="IN_PLAY")
+    live["utcDate"] = "2026-10-21T19:00:00Z"
+    domestic = dict(make_match("Athletic Club", "Levante", 1, 2, "2026-10-21"), competition={"code": "PD"}, status="IN_PLAY")
+    domestic["utcDate"] = "2026-10-21T18:00:00Z"
+
+    payload = {"domestic": {"matches": [domestic]}, "cl": {"matches": [earlier, live]}}
+    fotmob_only = {
+        "id": 99,
+        "league_code": "CL",
+        "league_name": "Champions League",
+        "home": "Real Madrid",
+        "away": "RB Leipzig",
+        "home_crest": None,
+        "away_crest": None,
+        "home_score": 4,
+        "away_score": 1,
+        "status": "FINISHED",
+        "kickoff": "2026-10-21T19:00:00Z",
+    }
+    with (
+        patch("football_client.requests.get", side_effect=_route_today("", payload)),
+        patch("routes.football.champions_league_fixtures", return_value=[fotmob_only]),
+    ):
+        resp = client.get("/matches/today?date=2026-10-21")
+
+    assert resp.status_code == 200
+    assert [(m["home"], m["away"], m["league_code"], m["league_name"], m["home_score"]) for m in resp.get_json()] == [
+        ("Athletic Club", "Levante", "PD", "La Liga", 1),
+        ("Arsenal", "Bayern Munich", "CL", "Champions League", 1),
+        ("Real Madrid", "RB Leipzig", "CL", "Champions League", 4),
+    ]
+
+
+def test_matches_today_keeps_domestic_fixtures_when_champions_league_is_restricted(client):
+    pd = dict(make_match("Sevilla", "Valencia", 1, 0, "2026-10-12"), competition={"code": "PD"}, status="FINISHED")
+
+    payload = {
+        "domestic": {"matches": [pd]},
+        "cl": {},
+        "status": {"cl": 403},
+    }
+    with (
+        patch("football_client.requests.get", side_effect=_route_today("", payload)),
+        patch("routes.football.champions_league_fixtures", return_value=[]),
+    ):
+        resp = client.get("/matches/today?date=2026-10-12")
+
+    assert resp.status_code == 200
+    assert [m["home"] for m in resp.get_json()] == ["Sevilla"]
+
+
+def test_matches_today_uses_fotmob_when_football_data_has_no_ucl_access(client):
+    fotmob_match = {
+        "id": 6106238,
+        "league_code": "CL",
+        "league_name": "Champions League",
+        "home": "Bayern München",
+        "away": "Arsenal",
+        "home_crest": "https://images.fotmob.com/image_resources/logo/teamlogo/9823.png",
+        "away_crest": "https://images.fotmob.com/image_resources/logo/teamlogo/9825.png",
+        "home_score": 2,
+        "away_score": 2,
+        "status": "FINISHED",
+        "kickoff": "2026-10-21T19:00:00Z",
+    }
+    already = dict(
+        make_match("FC Bayern München", "Arsenal FC", 2, 2, "2026-10-21"),
+        competition={"code": "CL"},
+        status="FINISHED",
+    )
+    already["utcDate"] = "2026-10-21T19:00:00Z"
+    extra = dict(fotmob_match)
+    extra["id"] = 6106244
+    extra["home"] = "Real Madrid"
+    extra["away"] = "RB Leipzig"
+
+    with (
+        patch("football_client.requests.get", side_effect=_route_today("", {"status": {"domestic": 403, "cl": 403}})),
+        patch("routes.football.champions_league_fixtures", return_value=[fotmob_match, extra]),
+    ):
+        resp = client.get("/matches/today?date=2026-10-21")
+
+    assert resp.status_code == 200
+    rows = [(m["home"], m["away"], m["league_code"]) for m in resp.get_json()]
+    assert ("Bayern München", "Arsenal", "CL") in rows
+    assert ("Real Madrid", "RB Leipzig", "CL") in rows
+
+    # A football-data row for the same fixture is not duplicated by FotMob's name.
+    with (
+        patch("football_client.requests.get", side_effect=_route_today("", {"domestic": {"matches": [already]}})),
+        patch("routes.football.champions_league_fixtures", return_value=[fotmob_match]),
+    ):
+        resp = client.get("/matches/today?date=2026-10-21")
+
+    assert [m["home"] for m in resp.get_json()] == ["FC Bayern München"]
+
+
+def test_matches_today_rejects_a_bad_date(client):
+    resp = client.get("/matches/today?date=21-10-2026")
+
+    assert resp.status_code == 400
+    assert resp.get_json()["error"] == "date must be YYYY-MM-DD"
+
+
 def test_matches_today_surfaces_upstream_errors(client):
-    with patch("football_client.requests.get", return_value=FakeResponse({}, status_code=429)):
+    with (
+        patch("football_client.requests.get", return_value=FakeResponse({}, status_code=429)),
+        patch("routes.football.champions_league_fixtures", return_value=[]),
+    ):
         resp = client.get("/matches/today")
 
     assert resp.status_code == 429
@@ -296,7 +428,51 @@ def test_predictions_picks_higher_rated_team_as_winner(client):
     data = resp.get_json()
     assert len(data) == 1
     assert data[0]["predicted_winner"] == "Real Madrid"
+    assert data[0]["predicted_result"] == "home"
     assert data[0]["home_win_pct"] > data[0]["away_win_pct"]
+    assert data[0]["draw_pct"] > 0
+    assert data[0]["home_elo"] > data[0]["away_elo"]
+
+
+# ---------------------------------------------------------------------------
+# /ratings
+# ---------------------------------------------------------------------------
+
+
+def test_ratings_returns_ranked_table_from_finished_window(client):
+    today = date.today()
+    recent = (today - timedelta(days=3)).isoformat()
+    old = (today - timedelta(days=200)).isoformat()
+
+    def fake_get(url, headers=None, params=None, timeout=10):
+        assert params.get("status") == "FINISHED"
+        return FakeResponse(
+            {
+                "matches": [
+                    make_match("Real Madrid", "Girona", 2, 0, recent),
+                    make_match("Barcelona", "Alaves", 1, 0, recent),
+                    make_match("Alaves", "Real Madrid", 9, 0, old),
+                ]
+            }
+        )
+
+    with patch("football_client.requests.get", side_effect=fake_get):
+        resp = client.get("/ratings?league=PD")
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["league"] == "PD"
+    assert body["window_days"] == 90
+    assert body["matches_used"] == 2
+    assert body["model"]["includes_draw"] is True
+    assert body["ratings"][0]["team"] == "Real Madrid"
+    assert body["ratings"][0]["rank"] == 1
+    assert body["ratings"][0]["rating"] > 1500
+
+
+def test_ratings_rejects_unknown_league(client):
+    resp = client.get("/ratings?league=NOPE")
+    assert resp.status_code == 400
 
 
 # ---------------------------------------------------------------------------

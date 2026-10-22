@@ -22,6 +22,69 @@ def test_fixture_matching_handles_provider_names(monkeypatch, league, home, away
     assert fotmob_client.find_fixture(league, "2026-09-20", away, home) is None
 
 
+def test_champions_league_fixtures_reads_the_league_stage_only(monkeypatch):
+    payload = {
+        "leagues": [
+            {
+                "id": 42,
+                "name": "Champions League - League Stage",
+                "matches": [
+                    {
+                        "id": 1,
+                        "home": {"id": 10, "name": "Bayern München", "score": 2},
+                        "away": {"id": 11, "name": "Arsenal", "score": 2},
+                        "status": {"utcTime": "2026-10-21T19:00:00.000Z", "finished": True, "started": True},
+                    },
+                    {
+                        "id": 2,
+                        "home": {"id": 12, "name": "Tomorrow FC", "score": 0},
+                        "away": {"id": 13, "name": "Other", "score": 0},
+                        "status": {"utcTime": "2026-10-22T19:00:00.000Z", "started": False},
+                    },
+                ],
+            },
+            {
+                "id": 999,
+                "name": "UEFA Youth League",
+                "matches": [
+                    {
+                        "id": 3,
+                        "home": {"name": "Bayern München U19"},
+                        "away": {"name": "Arsenal U19"},
+                        "status": {"utcTime": "2026-10-21T14:00:00.000Z", "finished": True},
+                    }
+                ],
+            },
+        ]
+    }
+
+    class Response:
+        ok = True
+        status_code = 200
+
+        def json(self):
+            return payload
+
+    monkeypatch.setattr(fotmob_client.requests, "get", lambda *args, **kwargs: Response())
+    fixtures = fotmob_client.champions_league_fixtures("2026-10-21")
+
+    assert fixtures == [
+        {
+            "id": 1,
+            "league_code": "CL",
+            "league_name": "Champions League",
+            "home": "Bayern München",
+            "away": "Arsenal",
+            "home_crest": "https://images.fotmob.com/image_resources/logo/teamlogo/10.png",
+            "away_crest": "https://images.fotmob.com/image_resources/logo/teamlogo/11.png",
+            "home_score": 2,
+            "away_score": 2,
+            "status": "FINISHED",
+            "kickoff": "2026-10-21T19:00:00.000Z",
+        }
+    ]
+
+
 def test_accents_normalize_without_merging_different_clubs():
     assert fotmob_client._normalize("Atlético Madrid") == fotmob_client._normalize("Atletico Madrid")
     assert fotmob_client._normalize("Bayern München") == fotmob_client._normalize("Bayern Munchen")

@@ -17,6 +17,13 @@ function formatKickoff(iso) {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+// Local calendar day, so a UCL evening still counts as "today" after UTC rolls over.
+function localISODate(now = new Date()) {
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${now.getFullYear()}-${month}-${day}`;
+}
+
 function StatusLabel({ match, isLive, isFinished }) {
   if (isLive) {
     return (
@@ -95,10 +102,11 @@ export default function TodayGames() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [selectedLeagues, setSelectedLeagues] = useState([]);
+  const [today] = useState(localISODate);
 
   useEffect(() => {
     setLoading(true);
-    fetch(`${API_BASE}/matches/today`)
+    fetch(`${API_BASE}/matches/today?date=${today}`)
       .then((res) => res.json())
       .then((data) => {
         if (Array.isArray(data)) {
@@ -113,7 +121,7 @@ export default function TodayGames() {
         setError("Could not reach the backend");
       })
       .finally(() => setLoading(false));
-  }, []);
+  }, [today]);
 
   const visible = selectedLeagues.length === 0 ? matches : matches.filter((m) => selectedLeagues.includes(m.league_code));
   const liveCount = matches.filter((m) => LIVE_STATUSES.has(m.status)).length;

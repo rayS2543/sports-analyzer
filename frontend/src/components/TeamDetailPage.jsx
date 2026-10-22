@@ -130,6 +130,7 @@ function RosterGroup({ label, players }) {
 function LastLineup({ league, teamName, match }) {
   const [detail, setDetail] = useState(null);
   const [error, setError] = useState(null);
+  const [elo, setElo] = useState(null);
 
   useEffect(() => {
     if (!match) return undefined;
@@ -233,6 +234,22 @@ export default function TeamDetailPage() {
   }));
   const otherPlayers = (team?.squad || []).filter((player) => !POSITION_LABELS[player.position]);
 
+  useEffect(() => {
+    setElo(null);
+    fetch(`${API_BASE}/ratings?league=${league}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.ratings) {
+          const row = data.ratings.find((r) => r.team === teamName);
+          setElo(row || null);
+        }
+      })
+      .catch((err) => {
+        console.error("Error fetching team Elo:", err);
+      });
+  }, [league, teamName]);
+
+
   return (
     <PageShell back>
       <section className="flex items-start gap-5">
@@ -245,6 +262,22 @@ export default function TeamDetailPage() {
               {[team.venue, team.coach?.name && `Coach ${team.coach.name}`, team.founded && `Est. ${team.founded}`]
                 .filter(Boolean)
                 .join(" · ")}
+            </p>
+          )}
+          {elo && (
+            <p className="text-sm text-muted pt-1">
+              <span className="text-fg font-semibold tabular-nums">Elo {elo.rating}</span>
+              <span className="text-faint"> · </span>
+              <span className="tabular-nums">#{elo.rank}</span>
+              <span className="text-faint"> in league · </span>
+              <span className={`tabular-nums ${elo.delta > 0 ? "text-win" : elo.delta < 0 ? "text-loss" : ""}`}>
+                {elo.delta > 0 ? "+" : ""}
+                {elo.delta}
+              </span>
+              <span className="text-faint"> vs baseline · </span>
+              <Link to={`/elo?league=${league}`} className="text-accent hover:underline">
+                Full table
+              </Link>
             </p>
           )}
         </div>
