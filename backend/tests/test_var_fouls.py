@@ -130,6 +130,53 @@ def test_review_explains_empty_window():
     assert out["incidents"] == [] and "No opposing players" in out["message"]
 
 
+# ---------- graded lean ----------
+
+def test_prob_enumerates_independent_states():
+    assert var_fouls._prob({"a": 0.8, "b": 0.5}, lambda s: s["a"] and s["b"]) == pytest.approx((0.4, 0.4))
+    assert var_fouls._prob({"a": 0.8, "b": None}, lambda s: s["a"] and s["b"]) == pytest.approx((0.0, 0.8))
+
+
+def test_confidence_maps_to_probability():
+    assert var_fouls._p(I(True, conf=0.0)) == 0.5 and var_fouls._p(HIDDEN) is None
+    assert var_fouls._p(I(True, conf=0.5)) == pytest.approx(0.75) and var_fouls._p(I(False, conf=0.5)) == pytest.approx(0.25)
+
+
+UNSURE_RED = {"contact": I(True, conf=0.59, body_part="shin", striking_part="right foot"), "studs_showing": I(True, conf=0.59),
+              "contact_above_ankle": I(True, conf=0.59), "challenger_speed": I(7.0, conf=0.59), "challenging_for_ball": HIDDEN}
+
+
+def test_lean_fills_the_gap_below_the_strict_bar_and_is_never_decisive():
+    out = var_fouls.assess_incident({"indicators": sfp_ind(**UNSURE_RED), "dogso": factors(), "calibrated": False})
+    g = out["grounds"][0]
+    assert g["verdict"] == "inconclusive" and out["sanction"] == "inconclusive"
+    assert g["lean"]["reading"] == "red" and g["lean"]["decisive"] is False
+    assert 0.6 <= g["lean"]["probability"] < 1 and g["lean"]["probability"] == g["lean"]["p_red"][0]
+    assert "shin" in g["lean"]["basis"] and "fast" in g["lean"]["basis"]
+    assert any("calibrated" in x for x in g["lean"]["settle"])
+    assert "not a validated hit rate" in g["lean"]["note"]
+    assert out["lean"]["reading"] == "red" and out["lean"]["ground"] == "serious_foul_play" and out["lean"]["decisive"] is False
+
+
+def test_strict_decisions_carry_no_lean():
+    out = var_fouls.assess_incident({"indicators": sfp_ind(studs_showing=I(True), contact_above_ankle=I(True)), "dogso": factors()})
+    assert out["sanction"] == "red" and out["lean"] is None
+    assert out["grounds"][0]["verdict"] == "red" and out["grounds"][0]["lean"] is None
+
+
+def test_lean_not_red_when_the_evidence_points_away():
+    ind = sfp_ind(contact=I(False, conf=0.5), studs_showing=I(False, conf=0.5), both_feet_off_ground=I(False, conf=0.5),
+                  straight_leg_high_foot=I(False, conf=0.5))
+    out = var_fouls.assess_incident({"indicators": ind, "dogso": factors(in_penalty_area=HIDDEN)})
+    assert out["sanction"] == "inconclusive" and out["lean"]["reading"] == "not_red" and out["lean"]["probability"] > 0.5
+
+
+def test_unmeasured_evidence_is_never_guessed_into_a_lean():
+    out = var_fouls.assess_incident({"indicators": {}, "dogso": {}})
+    assert out["lean"]["reading"] == "no_lean" and out["lean"]["probability"] is None
+    assert all(g["lean"]["reading"] == "no_lean" for g in out["grounds"])
+
+
 # ---------- routes ----------
 
 class FakeProcess:
@@ -370,3 +417,8 @@ def test_combine_parts_from_another_clip_of_the_event(client, angles):
     assert [a["angle"] for a in got.json["angles"]] == [REPLAY, "clip 44656500 1.0-7.0"]
     assert got.json["crossview_request"]["live"] == {"clip": "44656500", "start": 1.0, "end": 7.0}
     assert missing.status_code == 404
+
+
+def test_uncalibrated_dogso_factors_give_no_lean_even_with_contact():
+    dg = var_fouls.assess_incident({"indicators": sfp_ind(), "dogso": {}})["grounds"][2]
+    assert dg["verdict"] == "inconclusive" and dg["lean"]["reading"] == "no_lean"

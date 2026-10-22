@@ -82,6 +82,7 @@ NEAR_SAMPLE_S = 0.25   # a full-rate frame borrows the homography of a calibrate
 COARSE_HZ = 15         # first pose pass rate; the closest approach is then refined at the full frame rate
 TOUCH = 0.06           # striking point within 6% of body height (~11 cm) of a segment = touching
 NEAR = 0.15            # within 15% = contact possible but not resolved
+UNCALIBRATED_MAX_CONF = 0.55  # below backend RELY (0.6): two skeletons overlapping in the image are not proof of touching
 BODY_M = 1.80          # assumed stature for skeleton-relative heights
 LIMB_OFFSET_M = 0.4    # a limb can sit this far horizontally from the tracked foot anchor
 PITCH_L, PITCH_W = 105.0, 68.0
@@ -346,6 +347,12 @@ def _speed(analysis, shot_id):
     """Playback speed of a shot (1 = real time; s < 1 = slow-motion replay, from var_cv.crossview)."""
     shot = next((s for s in analysis.get("shots") or [] if s["id"] == shot_id), None)
     return float((shot or {}).get("playback_speed") or 1.0)
+
+
+def _speed_unobserved(analysis, shot_id):
+    """A line-calibrated replay (crossview.solve_lines) has a camera but no time map: m/s from it assume real time."""
+    shot = next((s for s in analysis.get("shots") or [] if s["id"] == shot_id), None)
+    return bool((shot or {}).get("speed_unobserved"))
 
 
 def _velocity(track, t, speed=1.0):
@@ -893,6 +900,11 @@ def measure(cand, analysis, tracks, cap, fps, size, models, homs, debug_dir=None
     return out
 
 
+def uncalibrated_contact_conf(conf, touching):
+    """Without depth, overlap in the image never reaches the backend's RELY bar. 'Apart in the image' stays as it was."""
+    return min(conf, UNCALIBRATED_MAX_CONF) if touching else conf
+
+
 def _at_onset(cand, analysis, fps, size, models, debug_dir, recs, posed, ta, tb, base, onset):
     """All indicators for one contact episode (its onset frame, striker index, contact)."""
     rec, j, contact = onset
@@ -964,6 +976,10 @@ def _at_onset(cand, analysis, fps, size, models, debug_dir, recs, posed, ta, tb,
     else:
         c_conf *= 0.85
         detail += " Depth not verified (no calibration): image-plane contact only."
+        capped = uncalibrated_contact_conf(c_conf, touching)
+        if capped < c_conf:
+            detail += f" Confidence capped at {capped:.0%}: a replay close-up has no depth."
+        c_conf = capped
     if c2 is not None:
         detail += (f" Second pose model: {c2['d'] * BODY_M * 100:.0f} cm to the {c2['part']}"
                    + ("" if part_agree else " (different body part)") + ".")
@@ -993,7 +1009,10 @@ def _at_onset(cand, analysis, fps, size, models, debug_dir, recs, posed, ta, tb,
     # challenger speed
     speed = _speed(analysis, cand["shot"])  # slow-motion replay: shot seconds are not real seconds
     vel, how = _velocity(chal_track, t_c, speed)
-    if vel is None:
+    if _speed_unobserved(analysis, cand["shot"]):
+        indicators["challenger_speed"] = ind("Challenger speed at contact", None, 0, False,
+                                             "This replay's playback speed is unknown (it may be slow motion), so m/s from it would be wrong.")
+    elif vel is None:
         indicators["challenger_speed"] = ind("Challenger speed at contact", None, 0, False,
                                              "No calibrated track around the contact, so ground speed in m/s is unknown.")
     else:

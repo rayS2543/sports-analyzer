@@ -92,6 +92,21 @@ describe("FoulReview", () => {
     expect(screen.getByText(/without looking at the official decision/)).toBeInTheDocument();
   });
 
+  it("shows a graded lean under an inconclusive verdict, labelled as not a decision", async () => {
+    const lean = { reading: "red", probability: 0.62, p_red: [0.62, 0.62], basis: "contact with the right foot at the victim's shin, a fast approach (7 m/s)", settle: ["a calibrated view of the contact frame"], decisive: false, ground: "serious_foul_play" };
+    const unsure = { ...INCIDENT, sanction: "inconclusive", sanction_note: "Not clear.", lean, grounds: [{ ...INCIDENT.grounds[0], verdict: "inconclusive", lean }] };
+    responses = [{ ...DONE, incidents: [unsure] }];
+    render(<FoulReview clip="44656413" start={1} end={7} time={3.2} onSeek={() => {}} />);
+    await userEvent.click(await screen.findByRole("button", { name: /0:03\.2/ }));
+    const leans = screen.getAllByTestId("lean");
+    expect(leans).toHaveLength(2);
+    expect(within(leans[0]).getByText(/Leans red, ~62%/)).toBeInTheDocument();
+    expect(within(leans[0]).getByText(/not a decision/)).toBeInTheDocument();
+    expect(within(leans[0]).getByText(/Would settle it: a calibrated view/)).toBeInTheDocument();
+    expect(within(leans[0]).getByText(/not a validated hit rate/)).toBeInTheDocument();
+    expect(within(screen.getByRole("article", { name: "Serious foul play" })).getByText("Inconclusive")).toBeInTheDocument();
+  });
+
   it("shows the downgrade to a caution", async () => {
     const yellow = {
       ...INCIDENT,

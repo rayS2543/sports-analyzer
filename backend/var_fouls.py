@@ -185,6 +185,124 @@ def _downgrade(used, reasons):
         "Inside the penalty area: red if there was no attempt to play the ball, yellow if there was; " + _why_unknown(attempt) + "."])
 
 
+# ---------- graded lean (never a verdict) ----------
+LEAN_MARGIN = 0.10     # a lean is reported only when P(red) is at least this far from 50%
+LEAN_NOTE = ("A lean is the geometry's own uncertainty: each indicator's confidence c is read as P(correct) = 0.5 + 0.5c "
+             "(c = 0 is a coin flip), combined assuming the indicators are independent. It is not a validated hit rate, "
+             "and it is never a decision: only a verdict that clears the strict confidence bar is one.")
+SETTLE = {"calibrated": "a calibrated view of the contact frame (the live camera, or a replay with a pitch calibration)",
+          "boot": "an unobstructed view of the challenger's boot at the contact",
+          "ball": "a clear view of the ball around the contact",
+          "arm": "a clear view of the challenger's arms and the opponent's head"}
+SETTLE_BY = {"contact": "calibrated", "contact_above_ankle": "calibrated", "straight_leg_high_foot": "calibrated",
+             "challenger_speed": "calibrated", "studs_showing": "boot", "challenging_for_ball": "ball",
+             "off_ball_strike": "arm", "both_feet_off_ground": "calibrated"}
+
+
+def _p(i, test=None):
+    """P(condition) for one indicator: 0.5 + 0.5c when the reading satisfies it, 0.5 - 0.5c when not;
+    None when it was not measured (it is then left free instead of being guessed)."""
+    v = i.get("value")
+    if not i.get("observable") or v is None:
+        return None
+    c = i.get("confidence") or 0.0
+    return 0.5 + 0.5 * c if bool(test(v) if test else v) else 0.5 - 0.5 * c
+
+
+def _prob(ps, red):
+    """(lowest, highest) P(red(state)) over independent booleans ps = {name: P(true)}, enumerating every state.
+    A None entry is unmeasured: it may be anything, so the range spans both extremes."""
+    free = [n for n, p in ps.items() if p is None]
+    out = []
+    for fixed in range(1 << len(free)):
+        q = dict(ps, **{n: float(fixed >> k & 1) for k, n in enumerate(free)})
+        total = 0.0
+        for bits in range(1 << len(q)):
+            state = {n: bool(bits >> k & 1) for k, n in enumerate(q)}
+            if red(state):
+                w = 1.0
+                for n, p in q.items():
+                    w *= p if state[n] else 1 - p
+                total += w
+        out.append(total)
+    return min(out), max(out)
+
+
+def _lean(ps, red, text, unsure):
+    """Best reading of one ground from the same indicators the strict verdict uses. Red needs even the worst case for the
+    unmeasured evidence to lean red, not red needs even the best case to lean away; `unsure`: indicator keys whose
+    resolution would sharpen it."""
+    lo, hi = _prob(ps, red)
+    reading = "red" if lo >= 0.5 + LEAN_MARGIN else "not_red" if hi <= 0.5 - LEAN_MARGIN else "no_lean"
+    settle = list(dict.fromkeys(SETTLE[SETTLE_BY[k]] for k in unsure if k in SETTLE_BY))
+    return {"reading": reading, "p_red": [round(lo, 2), round(hi, 2)], "probability": round(lo if reading == "red" else 1 - hi, 2) if reading != "no_lean" else None,
+            "basis": text, "settle": settle, "decisive": False, "note": LEAN_NOTE}
+
+
+def _lean_serious(ind):
+    u = {k: _i(ind, k) for k in ("contact", "contact_above_ankle", "studs_showing", "both_feet_off_ground",
+                                 "straight_leg_high_foot", "challenger_speed", "challenging_for_ball")}
+    ps = {"contact": _p(u["contact"]), "above": _p(u["contact_above_ankle"]), "studs": _p(u["studs_showing"]),
+          "feet": _p(u["both_feet_off_ground"]), "straight": _p(u["straight_leg_high_foot"]),
+          "fast": _p(u["challenger_speed"], lambda v: v >= FAST_MPS),
+          # as in the strict rule, an unmeasured ball does not rule the ground out
+          "not_for_ball": _p(u["challenging_for_ball"], lambda v: v is False) or 0.0}
+    red = lambda s: (s["contact"] and not s["not_for_ball"]
+                     and ((s["studs"] and (s["above"] or s["fast"])) or s["feet"] or (s["straight"] and s["above"])))
+    c = u["contact"]
+    bits = [f"contact {'with' if c.get('value') else 'not shown with'} the {c.get('striking_part') or 'challenger'}"
+            + (f" at the victim's {c['body_part']}" if c.get("value") and c.get("body_part") else "")]
+    for key, phrase in (("studs_showing", "studs showing"), ("both_feet_off_ground", "both feet off the ground"),
+                        ("straight_leg_high_foot", "straight leg, high foot"), ("contact_above_ankle", "above the ankle")):
+        if u[key].get("observable") and u[key].get("value") is True:
+            bits.append(phrase)
+    sp = u["challenger_speed"]
+    if sp.get("observable") and sp.get("value") is not None:
+        bits.append(f"a {'fast' if sp['value'] >= FAST_MPS else 'slow'} approach ({sp['value']:g} m/s)")
+    unsure = [k for k, v in u.items() if k != "challenging_for_ball" and not _reliable(v)]
+    return _lean(ps, red, ", ".join(bits), unsure)
+
+
+def _lean_violent(ind):
+    u = {k: _i(ind, k) for k in ("off_ball_strike", "challenging_for_ball")}
+    arm = u["off_ball_strike"].get("arm_speed_mps")
+    ps = {"strike": _p(u["off_ball_strike"]), "off_ball": _p(u["challenging_for_ball"], lambda v: v is False),
+          "force": None if arm is None else float(arm >= ARM_FORCE_MPS)}
+    red = lambda s: s["strike"] and s["off_ball"] and s["force"]
+    s = u["off_ball_strike"]
+    text = ("a hand or arm reached the head" if s.get("value") else "no hand or arm reached the head") \
+        + ("" if arm is None else f", arm moving {arm:g} m/s")
+    return _lean(ps, red, text, [k for k, v in u.items() if not _reliable(v)])
+
+
+def _lean_dogso(ind, factors):
+    f = {k: _i(factors, k) for k in ("distance_to_goal", "direction_of_play", "control", "defenders_between",
+                                     "in_penalty_area", "attempt_to_play_ball")}
+    dfn = f["defenders_between"]
+    gk = dfn.get("goalkeepers") or 0
+    ps = {"contact": _p(_i(ind, "contact")), "near": _p(f["distance_to_goal"], lambda v: v <= DOGSO_NEAR_M),
+          "towards": _p(f["direction_of_play"], lambda v: v == "towards_goal"),
+          "control": _p(f["control"], lambda v: v <= CONTROL_M),
+          "clear": _p(dfn, lambda v: v - gk <= 0 and not (gk and (f["distance_to_goal"].get("value") or 0) > 16.5)),
+          "outside": _p(f["in_penalty_area"], lambda v: v is False), "no_attempt": _p(f["attempt_to_play_ball"], lambda v: v is False)}
+    red = lambda s: s["contact"] and s["near"] and s["towards"] and s["control"] and s["clear"] and (s["outside"] or s["no_attempt"])
+    text = "the factors are read from the pitch positions at the contact" if f["distance_to_goal"].get("observable") \
+        else "the pitch positions needed for the DOGSO factors are not available"
+    return _lean(ps, red, text, ["contact"] if not _reliable(_i(ind, "contact")) else [])
+
+
+def lean_of(leans):
+    """Incident-level lean from {ground: lean}: red if some ground leans red, not red only if every ground leans that way.
+    Grounds share their evidence, so they are not multiplied."""
+    top = max(leans, key=lambda g: leans[g]["p_red"][0])
+    if leans[top]["reading"] == "red":
+        return dict(leans[top], ground=top)
+    ground = max(leans, key=lambda g: leans[g]["p_red"][1])
+    if all(l["reading"] == "not_red" for l in leans.values()):
+        return dict(leans[ground], ground=ground)
+    return dict(leans[ground], ground=ground, reading="no_lean", probability=None)
+
+
 def sanction(grounds):
     verdicts = [g["verdict"] for g in grounds]
     if "red" in verdicts:
@@ -199,6 +317,9 @@ def sanction(grounds):
 def assess_incident(inc):
     ind, factors = inc.get("indicators") or {}, inc.get("dogso") or {}
     grounds = [serious_foul_play(ind), violent_conduct(ind), dogso(ind, factors)]
+    leans = dict(zip(("serious_foul_play", "violent_conduct", "dogso"), (_lean_serious(ind), _lean_violent(ind), _lean_dogso(ind, factors))))
+    for g in grounds:  # a lean only fills the gap where the strict rule says nothing
+        g["lean"] = leans[g["ground"]] if g["verdict"] == "inconclusive" else None
     result = sanction(grounds)
     notes = {"red": "At least one sending-off ground is met by the measurements.",
              "inconclusive": "No ground is clearly met, but at least one could not be ruled out from this footage.",
@@ -206,7 +327,8 @@ def assess_incident(inc):
              "none": "No sending-off ground is met. Cautions for reckless play or stopping a promising attack are not assessed."}
     return {"id": inc.get("id"), "t": inc.get("t"), "t_range": inc.get("t_range"), "shot": inc.get("shot"),
             "players": inc.get("players"), "calibrated": inc.get("calibrated", False), "grounds": grounds,
-            "sanction": result, "sanction_note": notes[result], "notes": (inc.get("notes") or []) + [POLICY],
+            "sanction": result, "sanction_note": notes[result],
+            "lean": lean_of(leans) if result == "inconclusive" else None, "notes": (inc.get("notes") or []) + [POLICY],
             "attack_direction": factors.get("attack_direction")}
 
 
