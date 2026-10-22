@@ -128,7 +128,7 @@ function GoalMouth({ shots, selectedId, onSelect, onHover, onLeave, keeper }) {
   );
 }
 
-export default function ShotMap({ shots, home, away, keeper = false }) {
+export default function ShotMap({ shots, home, away, keeper = false, focus }) {
   const [teamFilter, setTeamFilter] = useState("all");
   const [period, setPeriod] = useState("all");
   const [player, setPlayer] = useState("all");
@@ -138,6 +138,14 @@ export default function ShotMap({ shots, home, away, keeper = false }) {
   const hoverTimer = useRef();
   const tooltipId = useId();
   useEffect(() => () => clearTimeout(hoverTimer.current), []);
+  // `focus` ({ id, n }) is a request from outside to show one shot; n lets the same goal be re-requested.
+  useEffect(() => {
+    if (!focus) return;
+    setTeamFilter("all");
+    setPeriod("all");
+    setPlayer("all");
+    setSelectedId(focus.id);
+  }, [focus]);
   if (!shots) return <EmptyNote>Shot map not available for this match yet.</EmptyNote>;
   if (!shots.length) return <EmptyNote>No shots recorded for this match yet.</EmptyNote>;
 

@@ -69,9 +69,9 @@ export function PageShell({ back, children }) {
   );
 }
 
-export function Section({ title, aside, children, className = "" }) {
+export function Section({ title, aside, children, className = "", id }) {
   return (
-    <section className={`flex flex-col gap-4 min-w-0 ${className}`}>
+    <section id={id} className={`flex flex-col gap-4 min-w-0 ${className}`}>
       <div className="flex items-baseline justify-between gap-4">
         <h2 className="text-base font-semibold tracking-tight">{title}</h2>
         {aside && <div className="text-sm text-muted">{aside}</div>}

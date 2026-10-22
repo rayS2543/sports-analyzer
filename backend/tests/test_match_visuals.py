@@ -37,3 +37,15 @@ def test_match_assets_reuse_the_existing_page_fetch(monkeypatch):
     content = fotmob_client.fetch_match_content("/test-assets")
     assert content["teamAssets"]["home"] == {"crest": "home.png", "color": "#C63527"}
     assert content["teamAssets"]["away"]["crest"] == "away.png"
+
+
+def test_summary_links_each_goal_to_its_shot_and_hides_unstarted_matches():
+    shots = [{"id": 5, "playerId": 7, "min": 25, "eventType": "Goal"},
+             {"id": 6, "playerId": 7, "min": 25, "eventType": "AttemptSaved"}]
+    goal = {"side": "home", "player_id": 7, "name": "Player", "minute": 25, "added": None, "own_goal": False}
+    summary = {"started": True, "scores": [1, 0], "places": [7, None], "goals": [goal, {**goal, "minute": 80}]}
+    built = matches_detail._build_summary(summary, shots)
+    assert (built["home_score"], built["away_score"], built["home_place"], built["away_place"]) == (1, 0, 7, None)
+    assert [g["shot_id"] for g in built["goals"]] == [5, None]
+    assert matches_detail._build_summary({**summary, "started": False}, shots) is None
+    assert matches_detail._build_summary(None, shots) is None

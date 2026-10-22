@@ -1,6 +1,7 @@
 import json
 import re
 import unicodedata
+import xml.etree.ElementTree as ET
 
 import requests
 
@@ -251,10 +252,53 @@ def find_fixture(league_code, date, home_name, away_name):
     return None
 
 
+@cached(ttl_seconds=300)
+def _table_places(url):
+    """{team_id: place} from the FotMob table feed (XML, rows already in rank order)."""
+    try:
+        response = requests.get(url, headers=HEADERS, timeout=10)
+        rows = ET.fromstring(response.text).iter("t") if response.ok else []
+        return {int(row.get("id")): place for place, row in enumerate(rows, start=1)}
+    except (requests.exceptions.RequestException, ET.ParseError, TypeError, ValueError):
+        return {}
+
+
+def _goal_events(header):
+    events = header.get("events") or {}
+    goals = []
+    for side, key in (("home", "homeTeamGoals"), ("away", "awayTeamGoals")):
+        for entries in (events.get(key) or {}).values():
+            for e in entries:
+                if e.get("isPenaltyShootout"):
+                    continue
+                goals.append(
+                    {
+                        "side": side,
+                        "player_id": (e.get("player") or {}).get("id"),
+                        "name": (e.get("player") or {}).get("name"),
+                        "minute": e.get("time"),
+                        "added": e.get("overloadTime"),
+                        "own_goal": bool(e.get("ownGoal")),
+                    }
+                )
+    goals.sort(key=lambda g: (g["minute"] or 0, g["added"] or 0))
+    return goals
+
+
 @cached(ttl_seconds=60)
 def fetch_match_content(page_url):
     page_props = _fetch_page_props(page_url)
     content = page_props.get("content") or {}
+    header = page_props.get("header") or {}
+    teams = header.get("teams") or []
+    table_url = (content.get("table") or {}).get("url")
+    places = _table_places(table_url) if table_url else {}
+    content["summary"] = {
+        "started": bool((header.get("status") or {}).get("started")),
+        "scores": [t.get("score") for t in teams[:2]] if len(teams) == 2 else None,
+        "goals": _goal_events(header),
+        "places": [places.get(t.get("id")) for t in teams[:2]] if len(teams) == 2 else None,
+    }
     colors = (page_props.get("general") or {}).get("teamColors", {}).get("darkMode", {})
     event = (page_props.get("seo") or {}).get("eventJSONLD") or {}
     content["teamAssets"] = {
