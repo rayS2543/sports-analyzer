@@ -23,4 +23,14 @@ describe("App", () => {
       screen.getByRole("heading", { name: /sports analyzer/i })
     ).toBeInTheDocument();
   });
+
+  it("links to the Elo ratings page", () => {
+    render(
+      <MemoryRouter>
+        <App />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByRole("link", { name: /^elo$/i })).toHaveAttribute("href", "/elo");
+  });
 });
