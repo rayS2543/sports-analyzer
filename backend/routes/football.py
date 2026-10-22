@@ -79,10 +79,8 @@ def get_todays_matches():
     primary_error = None
 
     def add_cleaned(cleaned):
-        key = cleaned["id"]
-        if key is None:
-            key = (cleaned["home"], cleaned["away"], cleaned["kickoff"])
-        collected[key] = cleaned
+        # football-data.org and FotMob ids live in different spaces, so key on the fixture itself.
+        collected[(cleaned["league_code"], _normalize(cleaned["home"]), _normalize(cleaned["away"]), cleaned["kickoff"][:10])] = cleaned
 
     def absorb(data, fallback_code=None):
         for match in data.get("matches") or []:
