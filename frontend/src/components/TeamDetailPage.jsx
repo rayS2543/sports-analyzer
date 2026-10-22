@@ -1,6 +1,6 @@
 import { API_BASE } from "../apiBase";
 import React, { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import FollowButton from "./FollowButton";
 import NewsFeed from "./NewsFeed";
 import TeamBadge from "./TeamBadge";
@@ -28,6 +28,7 @@ export default function TeamDetailPage() {
   const teamName = decodeURIComponent(name);
   const [form, setForm] = useState(null);
   const [error, setError] = useState(null);
+  const [elo, setElo] = useState(null);
 
   useEffect(() => {
     setForm(null);
@@ -47,6 +48,21 @@ export default function TeamDetailPage() {
       });
   }, [league, name]);
 
+  useEffect(() => {
+    setElo(null);
+    fetch(`${API_BASE}/ratings?league=${league}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.ratings) {
+          const row = data.ratings.find((r) => r.team === teamName);
+          setElo(row || null);
+        }
+      })
+      .catch((err) => {
+        console.error("Error fetching team Elo:", err);
+      });
+  }, [league, teamName]);
+
   const resultFor = (m) => (m.winner === "Draw" ? "D" : m.winner === teamName ? "W" : "L");
 
   return (
@@ -56,6 +72,22 @@ export default function TeamDetailPage() {
         <div className="flex flex-col gap-1 min-w-0 flex-1">
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">{teamName}</h1>
           <p className="text-sm text-muted">{LEAGUE_NAMES[league] || league}</p>
+          {elo && (
+            <p className="text-sm text-muted pt-1">
+              <span className="text-fg font-semibold tabular-nums">Elo {elo.rating}</span>
+              <span className="text-faint"> · </span>
+              <span className="tabular-nums">#{elo.rank}</span>
+              <span className="text-faint"> in league · </span>
+              <span className={`tabular-nums ${elo.delta > 0 ? "text-win" : elo.delta < 0 ? "text-loss" : ""}`}>
+                {elo.delta > 0 ? "+" : ""}
+                {elo.delta}
+              </span>
+              <span className="text-faint"> vs baseline · </span>
+              <Link to={`/elo?league=${league}`} className="text-accent hover:underline">
+                Full table
+              </Link>
+            </p>
+          )}
         </div>
         <FollowButton league={league} name={teamName} />
       </section>

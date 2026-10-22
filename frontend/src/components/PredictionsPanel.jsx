@@ -3,33 +3,82 @@ import React, { useEffect, useState } from "react";
 import TeamBadge from "./TeamBadge";
 import { EmptyNote, ErrorNote, Section, SkeletonRows, formatDay } from "./ui";
 
-function Prediction({ p }) {
-  const homeFav = p.predicted_winner === p.home;
+function resultLabel(p) {
+  if (p.predicted_result === "draw") return "Draw most likely";
+  if (p.predicted_result === "home") return `${p.home} lean`;
+  if (p.predicted_result === "away") return `${p.away} lean`;
+  return p.predicted_winner;
+}
+
+function OutcomeBar({ p }) {
+  const homeFav = p.predicted_result === "home";
+  const awayFav = p.predicted_result === "away";
+  const drawFav = p.predicted_result === "draw";
+
   return (
-    <li className="flex flex-col gap-2.5 py-4 border-b border-line/60 last:border-0">
-      <div className="flex items-center justify-between text-xs text-faint">
+    <div className="flex flex-col gap-1.5">
+      <div
+        className="flex h-2 rounded-full overflow-hidden bg-raised"
+        role="img"
+        aria-label={`${p.home} ${p.home_win_pct}%, draw ${p.draw_pct}%, ${p.away} ${p.away_win_pct}%`}
+      >
+        <div
+          className={`h-full transition-[width] duration-500 ease-out ${homeFav ? "bg-accent" : "bg-accent/45"}`}
+          style={{ width: `${p.home_win_pct}%` }}
+        />
+        <div
+          className={`h-full transition-[width] duration-500 ease-out ${drawFav ? "bg-muted" : "bg-faint/40"}`}
+          style={{ width: `${p.draw_pct}%` }}
+        />
+        <div
+          className={`h-full transition-[width] duration-500 ease-out ${awayFav ? "bg-win" : "bg-win/40"}`}
+          style={{ width: `${p.away_win_pct}%` }}
+        />
+      </div>
+      <div className="flex items-center justify-between text-[11px] tabular-nums text-muted">
+        <span className={homeFav ? "text-accent font-semibold" : ""}>{p.home_win_pct}%</span>
+        <span className={drawFav ? "text-fg font-semibold" : ""}>Draw {p.draw_pct}%</span>
+        <span className={awayFav ? "text-win font-semibold" : ""}>{p.away_win_pct}%</span>
+      </div>
+    </div>
+  );
+}
+
+function Prediction({ p }) {
+  return (
+    <li className="flex flex-col gap-3 py-4 border-b border-line/60 last:border-0">
+      <div className="flex items-center justify-between gap-3 text-xs text-faint">
         <time dateTime={p.date}>{formatDay(p.date)}</time>
-        <span className="sr-only">Predicted winner: {p.predicted_winner}</span>
+        <span className="text-muted">{resultLabel(p)}</span>
       </div>
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-sm">
         <div className="flex items-center gap-2 min-w-0">
           <TeamBadge name={p.home} crest={p.home_crest} size="sm" />
-          <span className={`truncate ${homeFav ? "font-semibold" : "text-muted"}`}>{p.home}</span>
+          <div className="min-w-0 flex flex-col">
+            <span className={`truncate ${p.predicted_result === "home" ? "font-semibold" : "text-muted"}`}>
+              {p.home}
+            </span>
+            {p.home_elo != null && (
+              <span className="text-[11px] tabular-nums text-faint">Elo {p.home_elo}</span>
+            )}
+          </div>
         </div>
         <span className="text-xs text-faint">vs</span>
         <div className="flex items-center justify-end gap-2 min-w-0">
-          <span className={`truncate text-right ${homeFav ? "text-muted" : "font-semibold"}`}>{p.away}</span>
+          <div className="min-w-0 flex flex-col items-end">
+            <span
+              className={`truncate text-right ${p.predicted_result === "away" ? "font-semibold" : "text-muted"}`}
+            >
+              {p.away}
+            </span>
+            {p.away_elo != null && (
+              <span className="text-[11px] tabular-nums text-faint">Elo {p.away_elo}</span>
+            )}
+          </div>
           <TeamBadge name={p.away} crest={p.away_crest} size="sm" />
         </div>
       </div>
-      <div className="flex items-center gap-3 text-xs tabular-nums">
-        <span className={`w-10 ${homeFav ? "text-accent font-semibold" : "text-muted"}`}>{p.home_win_pct}%</span>
-        <div className="flex-1 flex gap-0.5 h-1.5" role="img" aria-label={`${p.home} ${p.home_win_pct}%, ${p.away} ${p.away_win_pct}%`}>
-          <div className={`rounded-full ${homeFav ? "bg-accent" : "bg-faint/50"}`} style={{ width: `${p.home_win_pct}%` }} />
-          <div className={`rounded-full ${homeFav ? "bg-faint/50" : "bg-accent"}`} style={{ width: `${p.away_win_pct}%` }} />
-        </div>
-        <span className={`w-10 text-right ${homeFav ? "text-muted" : "text-accent font-semibold"}`}>{p.away_win_pct}%</span>
-      </div>
+      <OutcomeBar p={p} />
     </li>
   );
 }
@@ -61,7 +110,7 @@ export default function PredictionsPanel({ league }) {
   }, [league]);
 
   return (
-    <Section title="Predictions" aside="Elo model, last 90 days">
+    <Section title="Match tips" aside="Elo · home / draw / away">
       {error ? (
         <ErrorNote>{error}</ErrorNote>
       ) : predictions === null ? (
@@ -71,7 +120,7 @@ export default function PredictionsPanel({ league }) {
       ) : (
         <ul className="-mt-4">
           {predictions.map((p, idx) => (
-            <Prediction key={idx} p={p} />
+            <Prediction key={`${p.date}-${p.home}-${p.away}-${idx}`} p={p} />
           ))}
         </ul>
       )}
