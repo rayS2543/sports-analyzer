@@ -130,7 +130,6 @@ function RosterGroup({ label, players }) {
 function LastLineup({ league, teamName, match }) {
   const [detail, setDetail] = useState(null);
   const [error, setError] = useState(null);
-  const [elo, setElo] = useState(null);
 
   useEffect(() => {
     if (!match) return undefined;
@@ -205,6 +204,7 @@ export default function TeamDetailPage() {
   const { league, name } = useParams();
   const teamName = decodeURIComponent(name);
   const [team, setTeam] = useState(null);
+  const [elo, setElo] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
