@@ -428,7 +428,51 @@ def test_predictions_picks_higher_rated_team_as_winner(client):
     data = resp.get_json()
     assert len(data) == 1
     assert data[0]["predicted_winner"] == "Real Madrid"
+    assert data[0]["predicted_result"] == "home"
     assert data[0]["home_win_pct"] > data[0]["away_win_pct"]
+    assert data[0]["draw_pct"] > 0
+    assert data[0]["home_elo"] > data[0]["away_elo"]
+
+
+# ---------------------------------------------------------------------------
+# /ratings
+# ---------------------------------------------------------------------------
+
+
+def test_ratings_returns_ranked_table_from_finished_window(client):
+    today = date.today()
+    recent = (today - timedelta(days=3)).isoformat()
+    old = (today - timedelta(days=200)).isoformat()
+
+    def fake_get(url, headers=None, params=None, timeout=10):
+        assert params.get("status") == "FINISHED"
+        return FakeResponse(
+            {
+                "matches": [
+                    make_match("Real Madrid", "Girona", 2, 0, recent),
+                    make_match("Barcelona", "Alaves", 1, 0, recent),
+                    make_match("Alaves", "Real Madrid", 9, 0, old),
+                ]
+            }
+        )
+
+    with patch("football_client.requests.get", side_effect=fake_get):
+        resp = client.get("/ratings?league=PD")
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["league"] == "PD"
+    assert body["window_days"] == 90
+    assert body["matches_used"] == 2
+    assert body["model"]["includes_draw"] is True
+    assert body["ratings"][0]["team"] == "Real Madrid"
+    assert body["ratings"][0]["rank"] == 1
+    assert body["ratings"][0]["rating"] > 1500
+
+
+def test_ratings_rejects_unknown_league(client):
+    resp = client.get("/ratings?league=NOPE")
+    assert resp.status_code == 400
 
 
 # ---------------------------------------------------------------------------

@@ -1,28 +1,50 @@
-# Prediction endpoints are implemented on top of this blueprint.
+# Prediction and Elo rating endpoints.
 # See backend/elo.py for the rating model.
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, jsonify, request
 
-from elo import compute_ratings, win_probability
+from elo import (
+    DRAW_BASE,
+    HOME_ADVANTAGE,
+    INITIAL,
+    K,
+    compute_ratings,
+    predict_match,
+    ranked_table,
+)
 from football_client import FootballDataError, get
 from leagues import DEFAULT_LEAGUE, get_league
 
 predictions_bp = Blueprint("predictions", __name__)
 
+RATING_WINDOW_DAYS = 90
+
+
+def _league_or_400(league):
+    if get_league(league) is None:
+        return None, (jsonify({"error": f"Unknown league code '{league}'"}), 400)
+    return league, None
+
+
+def _finished_in_window(league, days=RATING_WINDOW_DAYS):
+    """Fetch finished matches for a league and keep the last `days` days."""
+    today = datetime.now(timezone.utc).date()
+    finished_data = get(f"/competitions/{league}/matches", params={"status": "FINISHED"})
+    cutoff = (today - timedelta(days=days)).isoformat()
+    matches = [m for m in finished_data.get("matches", []) if m["utcDate"][:10] >= cutoff]
+    return matches, today
+
 
 @predictions_bp.route("/predictions")
 def get_predictions():
     league = request.args.get("league", DEFAULT_LEAGUE)
-    if get_league(league) is None:
-        return jsonify({"error": f"Unknown league code '{league}'"}), 400
-
-    today = datetime.utcnow().date()
+    league, err = _league_or_400(league)
+    if err:
+        return err
 
     try:
-        # One season-wide call (the /matches date filter caps at 10 days on
-        # the free tier, which took ~10 calls); trimmed to the 90-day window below.
-        finished_data = get(f"/competitions/{league}/matches", params={"status": "FINISHED"})
+        finished_matches, today = _finished_in_window(league)
         upcoming_data = get(
             "/matches",
             params={
@@ -38,22 +60,14 @@ def get_predictions():
     except FootballDataError as e:
         return jsonify({"error": e.message}), e.status_code
 
-    cutoff = (today - timedelta(days=90)).isoformat()
-    finished_matches = [m for m in finished_data.get("matches", []) if m["utcDate"][:10] >= cutoff]
+    state = compute_ratings(finished_matches)
     upcoming_matches = upcoming_data.get("matches", [])
-
-    ratings = compute_ratings(finished_matches)
 
     predictions = []
     for match in upcoming_matches:
         home_name = match["homeTeam"]["name"]
         away_name = match["awayTeam"]["name"]
-
-        home_rating = ratings.get(home_name, 1500)
-        away_rating = ratings.get(away_name, 1500)
-
-        home_win_pct, away_win_pct = win_probability(home_rating, away_rating)
-        predicted_winner = home_name if home_win_pct >= away_win_pct else away_name
+        tip = predict_match(home_name, away_name, state)
 
         predictions.append(
             {
@@ -62,11 +76,43 @@ def get_predictions():
                 "home_crest": match["homeTeam"].get("crest"),
                 "away_crest": match["awayTeam"].get("crest"),
                 "date": match["utcDate"][:10],
-                "predicted_winner": predicted_winner,
-                "home_win_pct": round(home_win_pct, 1),
-                "away_win_pct": round(away_win_pct, 1),
+                **tip,
             }
         )
 
     predictions.sort(key=lambda p: p["date"])
     return jsonify(predictions)
+
+
+@predictions_bp.route("/ratings")
+def get_ratings():
+    """League Elo table built from the same window as /predictions."""
+    league = request.args.get("league", DEFAULT_LEAGUE)
+    league, err = _league_or_400(league)
+    if err:
+        return err
+
+    try:
+        finished_matches, _today = _finished_in_window(league)
+    except FootballDataError as e:
+        return jsonify({"error": e.message}), e.status_code
+
+    state = compute_ratings(finished_matches)
+    table = ranked_table(state)
+
+    return jsonify(
+        {
+            "league": league,
+            "window_days": RATING_WINDOW_DAYS,
+            "matches_used": len(finished_matches),
+            "model": {
+                "initial": INITIAL,
+                "k": K,
+                "home_advantage": HOME_ADVANTAGE,
+                "draw_base": DRAW_BASE,
+                "includes_draw": True,
+                "margin_of_victory": True,
+            },
+            "ratings": table,
+        }
+    )
