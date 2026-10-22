@@ -95,6 +95,30 @@ function TeamLineup({ team, side, expandedPlayer, onTogglePlayer }) {
   );
 }
 
+const ordinal = (n) => `${n}${["th", "st", "nd", "rd"][n % 100 >= 11 && n % 100 <= 13 ? 0 : n % 10 < 4 ? n % 10 : 0]}`;
+
+function Scorers({ goals, onShowGoal }) {
+  if (!goals.length) return null;
+  return (
+    <ul className="flex flex-col gap-1 text-sm text-muted">
+      {goals.map((goal, i) => {
+        const label = `${goal.name} ${goal.minute}${goal.added ? `+${goal.added}` : ""}′${goal.own_goal ? " (og)" : ""}`;
+        return (
+          <li key={`${goal.player_id}-${goal.minute}-${i}`}>
+            {goal.shot_id ? (
+              <button type="button" onClick={() => onShowGoal(goal.shot_id)} className="pressable text-accent hover:underline" title="Show this goal on the shot map">
+                {label}
+              </button>
+            ) : (
+              label
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 export default function MatchDetailPage() {
   const { id } = useParams();
   const { league, date, home, away } = decodeMatchId(id);
@@ -103,12 +127,14 @@ export default function MatchDetailPage() {
   const [detailError, setDetailError] = useState(null);
   const [expandedPlayer, setExpandedPlayer] = useState(null);
   const [side, setSide] = useState("home");
+  const [focus, setFocus] = useState(null);
 
   useEffect(() => {
     setDetail(null);
     setDetailError(null);
     setExpandedPlayer(null);
     setSide("home");
+    setFocus(null);
     const controller = new AbortController();
     const query = new URLSearchParams({ league, date, home, away });
     fetch(`${API_BASE}/matches/detail?${query}`, { signal: controller.signal })
@@ -128,6 +154,11 @@ export default function MatchDetailPage() {
     return () => controller.abort();
   }, [league, date, home, away]);
 
+  const summary = detail?.summary;
+  const showGoal = (shotId) => {
+    setFocus((current) => ({ id: shotId, n: (current?.n ?? 0) + 1 }));
+    document.getElementById("shot-map")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
   const togglePlayer = (playerId) => setExpandedPlayer((current) => (current === playerId ? null : playerId));
 
   return (
@@ -141,11 +172,21 @@ export default function MatchDetailPage() {
           <div className="flex flex-col items-center gap-3 min-w-0">
             <TeamBadge name={home} crest={detail?.home?.crest} size="xl" />
             <h1 className="text-lg sm:text-2xl font-semibold tracking-tight">{home}</h1>
+            {summary?.home_place && <p className="text-xs text-muted -mt-1">{ordinal(summary.home_place)} in table</p>}
+            {summary && <Scorers goals={summary.goals.filter((g) => g.side === "home")} onShowGoal={showGoal} />}
           </div>
-          <span className="pt-7 text-faint text-sm">vs</span>
+          {summary?.home_score != null && summary?.away_score != null ? (
+            <span className="pt-4 text-3xl sm:text-5xl font-semibold tabular-nums" aria-label={`Score ${summary.home_score} to ${summary.away_score}`}>
+              {summary.home_score} – {summary.away_score}
+            </span>
+          ) : (
+            <span className="pt-7 text-faint text-sm">vs</span>
+          )}
           <div className="flex flex-col items-center gap-3 min-w-0">
             <TeamBadge name={away} crest={detail?.away?.crest} size="xl" />
             <h2 className="text-lg sm:text-2xl font-semibold tracking-tight">{away}</h2>
+            {summary?.away_place && <p className="text-xs text-muted -mt-1">{ordinal(summary.away_place)} in table</p>}
+            {summary && <Scorers goals={summary.goals.filter((g) => g.side === "away")} onShowGoal={showGoal} />}
           </div>
         </div>
       </section>
@@ -171,8 +212,8 @@ export default function MatchDetailPage() {
           </>
         )}
       </Section>
-      <Section title="Shot map" aside="Chance by chance">
-        {detailError ? <ErrorNote>{detailError}</ErrorNote> : !detail ? <SkeletonRows rows={8} /> : detail.available ? <ShotMap key={id} shots={detail.shots} home={detail.home} away={detail.away} /> : <EmptyNote>Shot map not available for this match yet.</EmptyNote>}
+      <Section id="shot-map" title="Shot map" aside="Chance by chance">
+        {detailError ? <ErrorNote>{detailError}</ErrorNote> : !detail ? <SkeletonRows rows={8} /> : detail.available ? <ShotMap key={id} shots={detail.shots} home={detail.home} away={detail.away} focus={focus} /> : <EmptyNote>Shot map not available for this match yet.</EmptyNote>}
         {detail?.available && <p className="text-xs text-faint">Match data and formations via FotMob.</p>}
       </Section>
       </div>

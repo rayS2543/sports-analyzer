@@ -89,3 +89,11 @@ describe("formation", () => {
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 });
+
+it("selects a requested goal and clears filters that would hide it", () => {
+  const { rerender } = render(<ShotMap shots={shots} home={home} away={away} />);
+  fireEvent.change(screen.getByLabelText("Team"), { target: { value: "2" } });
+  rerender(<ShotMap shots={shots} home={home} away={away} focus={{ id: 1, n: 1 }} />);
+  expect(screen.getByLabelText("Team")).toHaveValue("all");
+  expect(screen.getByRole("button", { name: /Home striker/ })).toHaveAttribute("aria-pressed", "true");
+});

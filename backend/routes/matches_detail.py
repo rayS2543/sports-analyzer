@@ -31,6 +31,30 @@ def _build_shots(shotmap):
     ]
 
 
+def _build_summary(summary, shots):
+    """Score, per-side table places and scorers; each goal carries the id of its shot-map dot."""
+    if not summary or not summary.get("started"):
+        return None
+    scores = summary.get("scores") or [None, None]
+    places = summary.get("places") or [None, None]
+    goals = []
+    for goal in summary.get("goals") or []:
+        shot = next(
+            (s for s in shots or []
+             if s.get("playerId") == goal["player_id"] and s.get("min") == goal["minute"]
+             and (s.get("eventType") == "Goal" or s.get("isOwnGoal"))),
+            None,
+        )
+        goals.append({**goal, "shot_id": shot["id"] if shot else None})
+    return {
+        "home_score": scores[0],
+        "away_score": scores[1],
+        "home_place": places[0],
+        "away_place": places[1],
+        "goals": goals,
+    }
+
+
 def _build_team(team_block):
     def build_player(entry, starter):
         performance = entry.get("performance") or {}
@@ -91,13 +115,15 @@ def get_match_detail():
 
     lineup = content.get("lineup") or {}
     shots = _build_shots(content.get("shotmap"))
+    summary = _build_summary(content.get("summary"), shots)
     if not lineup.get("homeTeam") or not lineup.get("awayTeam"):
-        return jsonify({"available": False, "reason": "Lineup not published for this fixture yet.", "shots": shots})
+        return jsonify({"available": False, "reason": "Lineup not published for this fixture yet.", "shots": shots, "summary": summary})
 
     return jsonify(
         {
             "available": True,
             "shots": shots,
+            "summary": summary,
             "home": {**_build_team(lineup["homeTeam"]), **(content.get("teamAssets") or {}).get("home", {})},
             "away": {**_build_team(lineup["awayTeam"]), **(content.get("teamAssets") or {}).get("away", {})},
         }
