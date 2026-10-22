@@ -12,7 +12,7 @@ import requests
 from flask import Blueprint, jsonify, request, send_file
 
 from routes.var_clips import ESPN_LEAGUES, _get, clip_list
-from var_offside import assess as assess_offside, review as review_offside
+from var_offside import assess as assess_offside, feasibility as offside_feasibility, review_event as review_offside_event
 
 var_analysis_bp = Blueprint("var_analysis", __name__)
 ROOT = Path(__file__).resolve().parents[2]
@@ -419,9 +419,11 @@ def assess():
     if not result:
         return jsonify(error="No analysed frames for this clip window"), 404
     frame = _frame_at(result, t)
-    verdict = assess_offside(frame, track, team, direction, *_scale(result))
+    verdict = assess_offside(frame, track, team, direction, *_scale(result), view=_view(result))
     verdict["reasons"].insert(0, "The frame judged is the one you selected as the moment the ball was played; it was not detected automatically.")
     verdict["frame_t"] = frame["t"]
+    verdict["feasibility"] = offside_feasibility(frame, verdict, team, [f for f in result["frames"] if f.get("shot") == frame.get("shot")],
+                                                 None, "chosen by the user" if direction else None)
     return jsonify(verdict)
 
 
@@ -441,11 +443,10 @@ def review():
     for event in (e for e in result["events"] or [] if e.get("type") == "pass" and isinstance(e.get("t"), (int, float))):
         frame = _frame_at(result, event["t"])
         team = event.get("team") or next((p.get("team") for p in frame.get("players") or [] if p.get("track_id") == event.get("passer_track_id")), None)
-        key_result, candidates = review_offside(frame, event.get("passer_track_id"), team, *_scale(result))
+        key_result, candidates = review_offside_event(result["frames"], {**event, "team": team, "shot": frame.get("shot")}, *_scale(result), view=_view(result))
         confidence = event.get("confidence")
         detail = "; ".join(filter(None, [f"confidence {confidence:.2f}" if isinstance(confidence, (int, float)) else None, event.get("reason")]))
-        key_result["reasons"].insert(0, f"Frame chosen automatically as the pass moment ({detail or 'no detail'}); check it against the video.")
-        key_result["frame_t"] = frame["t"]
+        key_result["reasons"].insert(0, f"Pass detected automatically ({detail or 'no detail'}); check the moment against the video.")
         reviews.append({"event": event, "key": key_result, "candidates": candidates})
     return jsonify(reviews=reviews, message=None if reviews else "No pass was detected automatically in this window; pick the moment manually.")
 
@@ -457,6 +458,11 @@ def _analysis(clip_id, key):
 
 def _scale(result):
     return (result.get("pitch") or {}).get("length_m", 105.0), (result.get("video") or {}).get("sampled_fps")
+
+
+def _view(result):
+    video = result.get("video") or {}
+    return (video["width"], video["height"]) if video.get("width") and video.get("height") else None
 
 
 def _frame_at(result, t):
