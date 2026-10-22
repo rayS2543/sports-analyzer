@@ -117,3 +117,9 @@ def test_predict_match_includes_three_way_and_elos():
     assert tip["home_win_pct"] > tip["away_win_pct"]
     assert "draw_pct" in tip
     assert tip["predicted_result"] in {"home", "draw", "away"}
+
+
+def test_upset_swings_ratings_more_than_favorite_win():
+    from elo import _mov_multiplier
+
+    assert _mov_multiplier(1, -200) > _mov_multiplier(1, 200)

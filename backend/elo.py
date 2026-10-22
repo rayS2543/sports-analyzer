@@ -50,7 +50,7 @@ def _mov_multiplier(goal_diff: int, winner_minus_loser: float) -> float:
     gd = abs(int(goal_diff))
     if gd == 0:
         return 1.0
-    return math.log(gd + 1.0) * (2.2 / (2.2 + 0.001 * abs(winner_minus_loser)))
+    return math.log(gd + 1.0) * (2.2 / (2.2 + 0.001 * winner_minus_loser))
 
 
 def compute_ratings(
