@@ -156,6 +156,22 @@ Still wrong (not fixed, Mbappé window 23.0-28.0):
 - **Painted-line replay calibration merged** (branch `claude/gifted-albattani-f40038`). Its replay has no time map (`shot.speed_unobserved`), so `challenger_speed` is now not observable on such shots.
 - **Depth cue: tested, NOT wired.** Depth-Anything-V2-Small disparity at the striking point vs the struck point (`.claude/var-scratch/depth/depth_cue.py`, 98 image-contact opposing pairs on calibrated wide frames, truth = pitch ground distance <= 1.2 m vs >= 2 m): AUC 0.55 (15 touching, 76 apart). Keeping 73% of true touches still passes 64-67% of pairs that are metres apart. Too weak to move any confidence; earlier whole-frame rank correlation (0.98) does not carry over to keypoint-level touch tests. Not validated on replay close-ups at all.
 
+## Definition of done and lanes (2026-10-21, from the user's pasted plan)
+
+What "trustworthy" means, replacing "flawless from any ESPN angle":
+- Decisive only when at least one metric (calibrated) view plus stable identities exist; otherwise `inconclusive` with the named failure.
+- A limitation is not a bug. A bug is: we had the views and the identities and still lied or swapped people.
+- Success is graded against human geometry ground truth (contact, direction, studs), never the official decision.
+
+Lanes: A = squeeze the monocular ESPN stack (identity through tangles -> cross-view -> uncertainty calibration on a hand-labelled set);
+B = new inputs (a second angle that calibrates on its own, time-synced clips of one incident, user-uploaded researcher mode);
+C = stadium-grade (surveyed multi-camera, GPU workers, review bay). Sequence: finish A (identity done; cross-view unblocking is the
+calibration session on claude/gifted-albattani-f40038) -> prove multi-view on ONE incident with two calibrated angles (B) -> only then decide on C.
+
+Done in this slice: the uncalibrated close-up contact confidence cap (0.55, below RELY 0.6; image-plane overlap cannot be told from players metres
+apart in depth) is in cv/var_cv/fouls.py (added on feature/foul-graded-verdict, with a test); the 10-incident spot-check sheet is
+eval/spot_check_10.jpg, and the user judged those spot checks not worth marking because they lack depth.
+
 ## Open work — priority order
 
 1. ~~Live identity through tangles~~ done, see above. Remaining idea: a world-frame (pitch) velocity for calibrated shots if camera pans make image-space velocity unreliable.
