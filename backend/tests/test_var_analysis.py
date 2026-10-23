@@ -184,7 +184,7 @@ def test_assess_uses_nearest_frame_in_shot(client, env):
     calibrated = {"ok": True, "reprojection_error_m": 0.4, "keypoints": 9}
     analysis = {"version": 1, "pitch": {"length_m": 105.0, "width_m": 68.0}, "video": {"sampled_fps": 5},
                 "shots": [{"id": 0, "start": 0, "end": 2.0}, {"id": 1, "start": 2.1, "end": 5}],
-                "frames": [{"t": 1.8, "shot": 0, "calibration": calibrated, "ball": {"x": 60.0, "y": 30.0}, "players": players},
+                "frames": [{"t": 1.8, "shot": 0, "calibration": calibrated, "ball": {"x": 60.0, "y": 30.0, "airborne": False}, "players": players},
                            {"t": 2.2, "shot": 1, "calibration": {"ok": False}, "ball": None, "players": []}]}
     (env / "46338651" / "0.0-5.0").mkdir(parents=True)
     (env / "46338651" / "0.0-5.0" / "analysis.json").write_text(json.dumps(analysis))
@@ -192,7 +192,8 @@ def test_assess_uses_nearest_frame_in_shot(client, env):
     result = client.post("/var/assess", json=body).json
     assert result["frame_t"] == 1.8 and result["verdict"] == "offside" and result["attack_direction"] == "right"
     assert "not detected automatically" in result["reasons"][0]
-    assert any("velocities unavailable" in r for r in result["reasons"])  # v1: no vx
+    assert any("velocity unavailable" in r for r in result["reasons"])  # v1: no vx
+    assert result["feasibility"]["available"] and result["feasibility"]["goalkeeper"] == "located"
     assert client.post("/var/assess", json={**body, "t": 2.15}).json["verdict"] == "inconclusive"
     assert client.post("/var/assess", json={**body, "attacking_team": "C"}).status_code == 400
     assert client.post("/var/assess", json={**body, "clip": "1"}).status_code == 404
@@ -208,7 +209,7 @@ def v2_analysis(events):
                {"track_id": 4, "team": "B", "role": "player", "x": 75.0, "y": 40.0, "vx": 0.0},
                {"track_id": 20, "team": None, "role": "referee", "x": 90.0, "y": 10.0}]
     calibrated = {"ok": True, "reprojection_error_m": 0.4, "keypoints": 9, "source": "detected", "homography": [[1, 0, 0], [0, 1, 0], [0, 0, 1]]}
-    frames = [{"t": 12.0, "shot": 0, "calibration": calibrated, "ball": {"x": 60.0, "y": 30.0}, "players": players},
+    frames = [{"t": 12.0, "shot": 0, "calibration": calibrated, "ball": {"x": 60.0, "y": 30.0, "airborne": False}, "players": players},
               {"t": 12.1, "shot": 0, "calibration": {"ok": False, "homography": None}, "ball": None, "players": []}]
     return {"version": 2, "window": {"start": 12.0, "end": 17.0}, "pitch": {"length_m": 105.0, "width_m": 68.0},
             "video": {"sampled_fps": 10}, "shots": [{"id": 0, "start": 12.0, "end": 17.0}], "frames": frames, "events": events}
@@ -236,7 +237,10 @@ def test_review_assesses_every_pass(client, env):
     assert any("Timing" in r for r in key["reasons"])
     assert first["candidates"] == [{"track_id": 7, "verdict": "offside", "margin_m": 3.0},
                                    {"track_id": 8, "verdict": "onside", "margin_m": -10.0}]
-    assert body["reviews"][1]["key"]["verdict"] == "inconclusive"  # uncalibrated frame
+    assert key["feasibility"]["available"] and key["moment"]["method"].startswith("last sample")  # no ball track here
+    second = body["reviews"][1]["key"]
+    assert second["verdict"] == "inconclusive"  # uncalibrated frame
+    assert not second["feasibility"]["available"] and "no calibrated wide view of this moment" in second["feasibility"]["blockers"]
 
 
 def test_review_falls_back_to_passers_team(client, env):
