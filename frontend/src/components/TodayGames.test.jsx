@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { API_BASE } from "../apiBase";
 import TodayGames from "./TodayGames";
 
 const uclMatch = {
@@ -42,6 +43,6 @@ describe("TodayGames", () => {
     expect(screen.getByText("Live")).toBeInTheDocument();
 
     const matchUrl = global.fetch.mock.calls.map((call) => String(call[0])).find((url) => url.includes("/matches/today"));
-    expect(matchUrl).toMatch(/^http:\/\/127\.0\.0\.1:5000\/matches\/today\?date=\d{4}-\d{2}-\d{2}$/);
+    expect(matchUrl).toMatch(new RegExp(`^${API_BASE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/matches/today\\?date=\\d{4}-\\d{2}-\\d{2}$`));
   });
 });

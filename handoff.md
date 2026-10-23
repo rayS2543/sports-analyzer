@@ -1,0 +1,218 @@
+# Virtual VAR — handoff
+
+Branch `feature/virtual-var` (rebased on `main` 53ec72b). Not merged, no PR yet. Data/API contract: [`docs/virtual-var-contract.md`](docs/virtual-var-contract.md) — read it before changing any JSON shape or endpoint.
+
+## What it is (user intent — do not narrow it)
+
+A mini VAR built from real ESPN broadcast clips: pick a match and clip, pause on an incident, analyse a few seconds, and get an evidence-based **offside** or **foul / red-card** assessment, with lines drawn on the actual broadcast and an orbitable 3D reconstruction. Positions come from computer vision, never manual placement.
+
+Non-negotiable honesty rules:
+- The official ESPN decision is shown **separately** and never used to tune or grade the system.
+- `inconclusive` is a first-class verdict; every verdict reports its uncertainty.
+- Uncalibrated frames are marked, never faked. No interpolation across shot cuts.
+- 3D bodies are assumed geometry (ground-plane positions only) and the UI says so.
+
+The user's bar is "flawless": anything reported as a *limitation* is treated as a bug to fix.
+
+## Hard constraints
+
+- **Hardware:** fanless M2 MacBook Air (16 GB). Parallel ML jobs overheated it (kernel_task at 99%) and crashed it on 2026-09-28. Run **one** heavy CV process at a time (`var_cv.analyze` / `var_cv.fouls`), wait for `uptime` load < 20, use `nice -n 10`; thread caps (4) are already set in code.
+- **Never use `/tmp`** for worktrees, venvs, weights or scratch: macOS deletes files there after 3 days unaccessed (it destroyed part of this branch once).
+- **No paid APIs.** All models run locally (MPS). Roboflow hosted inference was rejected; its open `roboflow/sports` weights are used instead.
+- **Ports:** backend defaults to 5001 (macOS AirPlay owns 5000). Frontend reads `VITE_API_URL`.
+- Git: branch per feature, ask before committing/pushing, PR for review, never merge automatically (see `CLAUDE.md`).
+
+## Layout
+
+| Path | What |
+|---|---|
+| `cv/` | CV pipeline, **separate venv** (`cv/setup.sh` builds `.venv`, installs deps incl. `rtmlib --no-deps`, downloads ~650 MB of weights to `cv/weights/`). Not imported by Flask; the backend shells out to it. |
+| `cv/var_cv/analyze.py` | CLI: download clip (ESPN CDN only) → shot cuts → pitch calibration → detection/tracking → teams → smoothing → pass events → `ball3d` → `reid` → `analysis.json` |
+| `cv/var_cv/pitch.py` | Keypoint homography + painted-line refinement, lens distortion, calibration QA (`line_support`) |
+| `cv/var_cv/temporal.py` | Calibration propagation within a shot, track smoothing, velocities, pass events |
+| `cv/var_cv/shots.py`, `track.py`, `teams.py` | Hard-cut/dissolve detection, camera-motion-compensated tracker, kit-colour team model (`var_data/<clip>/team_model.json`) |
+| `cv/var_cv/ball3d.py`, `reid.py` | Ballistic 3D ball fit from the recovered camera; appearance/position re-identification across cuts |
+| `cv/var_cv/fouls.py` | CLI: contact candidates → YOLO pose + RTMPose Halpe26 (toe/heel) → Law 12 indicators → `fouls.json` |
+| `backend/routes/var_clips.py` | `/var/fixtures`, `/var/clips` (ESPN discovery) |
+| `backend/routes/var_analysis.py` | `/var/analyze`, `/var/analysis/<clip>`, `/var/windows/<clip>`, `/var/video/<clip>`, `/var/official`, `/var/assess`, `/var/review` |
+| `backend/var_offside.py` | Pure IFAB Law 11 logic with uncertainty `U = sqrt(r² + (2·0.3)² + T²)` |
+| `backend/routes/var_fouls.py`, `backend/var_fouls.py` | `/var/fouls` job + pure Law 12 logic (SFP, violent conduct, DOGSO, penalty-area downgrade) |
+| `frontend/src/components/var/` | `/var` page: `VarPage` (picker, jobs, deep links), `ClipPreview`, `VarViewer`, `VideoOverlay` (lines on the broadcast), `PitchScene` (three.js), `ReviewPanel`, `VerdictCard`, `FoulReview` |
+| `var_data/<clip>/<start>-<end>/` | Runtime output (gitignored): `analysis.json`, `fouls.json`, progress/error files |
+
+## Running it
+
+```bash
+cd cv && ./setup.sh                      # once: venv + weights + cv tests
+cd .. && python -m flask --app backend.app run --port 5001   # from repo root, backend venv
+cd frontend && npm ci && npm run dev     # open /var
+```
+Checks: `python -m pytest -q` (repo root, 151 backend), `cd cv && .venv/bin/python -m pytest -q` (39), `cd frontend && npm run lint && npx vitest run && npm run build` (68).
+
+Deep links: `/var?league=PD&date=2025-09-21&event=748191&clip=46338651&start=1.0&end=6.0` (Barça–Getafe, offside); `/var?league=PD&date=2025-04-13&event=704966&clip=44656413&start=23.0&end=28.0` (Mbappé red card, Alavés–Real Madrid).
+
+## State (2026-09-28; see cross-view section below for 2026-10-08)
+
+Working end to end: ESPN discovery → preview → window analysis → one-click offside review with lines on the video and broadcast-matched 3D → manual check → foul/red-card panel → separate official record.
+
+Per-window calibration (`var_data`, calibrated / sampled at 10 fps):
+
+| Clip / window | Calibrated | Notes |
+|---|---|---|
+| 46338651 1.0-6.0 | 51/51 | 1 pass event; offside test case (#23 Barça, t≈2.4) |
+| 46338651 38.5-44.5 | 60/60 | lofted pass: ball peaks 4.6 ± 0.45 m |
+| 46338651 61.0-66.0 | 51/51 | 2 pass events |
+| 46338651 62.0-70.0 | 67/81 | live cut at 66.4 s (ID carry-over test) |
+| 44656413 1.0-7.0 | 56/61 | red card, far live camera (was 0, then 48) |
+| 44656413 12.0-18.0 | 56/60 | aftermath (was 0, then 55) |
+| 44656413 23.0-28.0 | 0/42 | close-up replay of Mbappé's contact (t≈23.22): no fixable line geometry |
+| 44656413 27.0-31.0 | 0/30 | second (side-on) replay: same |
+| 46064061 1.0-7.0 | 57/61 | Gayà red card (Osasuna–Valencia, esp.1 748159) (was 0) |
+
+Latest CV work (in the handoff commit): wide-shot calibration for 44656413, robust team model (Madrid white now its own cluster `#dadae5`), and in `fouls.py` RTMPose toes/heels, ball detection at contact, measured localisation error and a working cv2 thread cap.
+
+Foul review on Mbappé: see "Done since the last handoff" below. No false reds on any negative window.
+
+## Done since the last handoff (2026-09-28 evening)
+
+1. **Calibration:** grass mask V floor 20 (stadium shadow); position-uncertainty gate is the 90th percentile over the visible grass (the max rejected good frames on mask-corner samples). Gayà 46064061 1.0-7.0: 0 → 57/61. The Mbappé replays (23.0-28.0, 27.0-31.0) remain 0: only parallel lines or an arc sliver are visible, which cannot fix a homography; metric evidence comes from the live window.
+2. **Fouls:** live contact at 3.27 (contact 0.57, knee 171°, 8.2 m/s); replay 1 contact at 23.223 is Mbappé (A) on Blanco (B); close-up teams read from the posed bodies' shirts when the tracks swap. **Combine angles:** `POST /var/fouls/<clip>/combine` + "Same incident from another angle" in the UI; each indicator from the angle that saw it best, contradictions never relied on and listed.
+3. **Studs:** leg contacts are their own episodes (arm touches in a close-up swallowed the kick). Replay 2 (side-on, 29.296) now finds the challenge: sole towards the shin (cos 1.00) but only 0.28 confidence (frames disagree); replay 1 reads sole away (0.34). Live + both replays combined: **inconclusive** on every ground.
+4. **Identity:** 46338651 62.0-70.0 now 5 carried over the 66.4 s cut (was 2). The other ~14 are genuinely ambiguous (same kit, within a few metres after a 1.5 s unseen gap) and get fresh ids; removing the shots' common calibration offset (1.75 m) did not change that.
+5. **ball3d:** quadratic drag for flights > 15 m/s (kept when the fit improves); a landing is a free segment break, so a 0.6 m hop is a flight, not rolling.
+6. **Arm to the head** gets contact's depth check (tracked > 2 m apart = no touch; uncalibrated = x0.85, "depth not verified"). The Mbappé replay's elbow-over-head was a 2D overlap (Blanco behind him): 0.60 → 0.51, no longer relied on.
+7. **One contact via two tracks** (one body tracked twice in a close-up) is reported once (`fouls.dedupe`).
+8. **Browser pass (2026-10-01):** both deep links on desktop and at 390 px (no horizontal overflow). Combine angles works in the UI (Mbappé live + replays: inconclusive on every ground).
+
+## Cross-view calibration (2026-10-08, Amendment 4)
+
+Replays that can't calibrate alone are fitted from the calibrated live shot of the same play: `cv/var_cv/crossview.py` (fixed-centre PTZ camera; feet vs synced live positions, body height, paint chamfer, soft camera motion; joint sync speed s and offset; strict acceptance). Backend `POST/GET /var/analysis/<clip>/crossview` (one machine-wide heavy-job slot shared with analyze/fouls; runs crossview then fouls), combine `crossview_available` / `suggested_pairs`, `GET /var/angles`; FoulReview "Calibrate this replay from the live camera"; timeline cross-view marks. Replay speeds are divided by `shots[].playback_speed` everywhere (tracks, fouls, ball3d gravity).
+
+- Synthetic (s = 0.4, pan + zoom, one touchline visible): s 0.3994 ± 0.011, C 1.22 m off, ground p90 0.19 m, 100% within 2σ, 41/41 frames; negatives fail with `underdetermined` / `replay camera moves` / `sync ambiguous`.
+- **Real Mbappé replays: 0/42 (23.0-28.0) and 0/30 (27.0-31.0)** — honest failure "no consistent camera" (feet 3σ from live players). The replay camera is fixed-centre (0.08 px), so the model fits; the inputs don't: the **live tracks swap identities in the tangle** (Blanco 23→28→27, Güler 27→31→4, Mbappé = 24), so the live incident at 3.27 ("27→28") is probably not Mbappé on Blanco and the sync anchor is wrong. Overlays: `.claude/var-scratch/crossview/ov23`, `ov27`, `livecrops.jpg`. Pre-crossview analysis backups: `.claude/var-scratch/crossview/backup/`.
+- Pseudo-ground truth not run: the 46338651 66.4 s cut is live play (the calibrated shots never overlap in time). A real check needs a replay from a different camera that is itself detect-calibrated.
+
+## Live identity through tangles (2026-10-08) — done, `cv/var_cv/track.py`
+
+Cause: `assign_ids` matched foot points to each track's *last* position only. When one detection box covered two players (44656413 1.0-7.0, 3.3 s: Mbappé + the white player beside him) the box snapped one track onto the other's feet, so ids crossed when the boxes split (Mbappé 24→27, the other white player 27→24; same kit, so reid's colour bands could not repair it: `sigma_app` 0.23). The same tracker also let a blue box continue a white track and let a 14×18 px ball box chain two players into one track (a blue Alavés player and a white Madrid player were one "track 29").
+
+Fix (all in `assign_ids`; `track_shot` passes a confident kit per box, margin > 0.4, never goalkeeper/referee kits):
+- predict each track at camera-compensated foot + recent velocity (first displacement seeds it);
+- a box that an established, just-seen track found no box of its own inside is a merge: it and the track that took the box coast through it (neither position nor velocity is updated) and are separated by motion when the boxes split;
+- a track never continues onto a box of the other kit (one confident reading is enough) or onto a box more than 1.8x taller/shorter.
+
+Verified: 44656413 1.0-7.0 keeps Mbappé (one track, one global id), the white player beside him and the blue defender through 3.0-3.5 s; the defender is team B throughout (was team A at 3.0 s). Robust to VEL_BLEND 0.3-1.0, COAST_DECAY 0.5-1.0, GATE 0.7-1.2, MAX_SCALE 1.5-3.0 (only 2.2 differs, at 2.9 s, before the tangle). On real player boxes (height >= 40 px) fragmentation fell: 44656413 1.0-7.0 40 → 33 tracks (median length 15.5 → 19), 46338651 62.0-70.0 56 → 45 (median 11.5 → 21; live carry-over across the 66.4 s cut still 5 + 1 by appearance), 46338651 1.0-6.0 30 → 28 (offside pass event identical, #21 → #6), 44656413 12.0-18.0 and 46064061 1.0-7.0 unchanged or better. Synthetic overtaking-in-a-merged-box: original keeps ids in 23/108 scenarios, new in 103/108. Replay harness (1 s per run, no YOLO): `.claude/var-scratch/tracking/README.md`.
+
+**Not regenerated:** `var_data/*` analysis.json / fouls.json still come from the old tracker. Regenerating changes them (checked in a scratch copy of 44656413 1.0-7.0):
+- Pass events 3 → 2: the old "passers" were 13-16 px ball boxes chained into player tracks (#23 at 2.0 s, #32 at 3.4 s); the one at 4.2 s sat on the blue/white chimera.
+- Foul incidents 6 → 5 (the 4.44 and 6.17 s candidates were chimera contacts). The live contact (3.27 s) is now at 3.24 s with the roles reversed: blue defender (#23, B, left knee) → Mbappé (#26, A, shin), contact confidence 0.0 (pose models disagree by 15 px, size_factor 0). The old "A #27 → B #28 right foot → thigh, 0.57" came from the swapped tracks. This is exactly Open work #2's "challenger direction in tangles"; nothing about it is validated yet.
+- Incidents and teams elsewhere in the window are now kit-consistent (2.64 s: blue #23 / white #4).
+- Close-ups: see the next section (they keep the plain association, `tangles=False`).
+
+## Close-up foul fixes (2026-10-12) — `cv/var_cv/fouls.py`, `track.py`
+
+What the three listed problems turned out to be, checked against the frames (`.claude/var-scratch/tracking/`):
+
+- **Challenger direction (fixed).** `_onset` took whichever body's striking point was nearest the other body. Distance is symmetric: at 23.19 s the falling blue player's knee was as close to Mbappé's shin as Mbappé's boot was to his leg, so it read blue → Mbappé (conf 0.06). New `_swing` / `_initiator`: the speed of each contacting keypoint relative to its own hips (a camera pan cancels) over the 0.3 s up to contact; the other body is the challenger only when its limb swings at least `SWING_MIN` (1.5 body heights/s) and more than `SWING_RATIO` (3.0) times faster. 23.19 s now reads Mbappé (A) right foot → blue player (B) thigh, swing 2.9 vs 0.5 (5.6x), conf 0.25. Every incident's notes carry both swing speeds. **Calibrated on one verified case**: the 3.0 ratio is a judgement, not a measurement. At ratio 2.0 a scrum at 13.61 s (12.0-18.0, swing 1.8 vs 0.7, unverifiable by eye) also flipped; at 3.0 it keeps its old reading.
+- **Kit change (the real defect is the team vote, fixed).** The original tracker already keeps Güler / Mouriño / Mbappé / the falling player on one id each in 23.0-28.0 (8 tracks). Güler's team came out B because he stands behind Mouriño and his shirt crop shows the blue kit (A 14, B 15 votes). `team_votes` now counts crops of overlapping boxes (`CROWD_OVERLAP` 0.3) at `CROWD_WEIGHT` 0.25 and needs `KIT_SHARE` 0.7 of the weighted votes, else the track has no team (the docstring had promised this ratio test; the code never did it). Mbappé A, Mouriño B, the falling player B, Güler unlabelled.
+- **Close-up tracking stays plain.** `assign_ids(..., tangles=False)` (used by `closeup_analysis`) is the original association. The tangle logic from the previous section made close-ups worse (14 tracks instead of 8; the blue player briefly took Mbappé's id at 23.6 s, because a missed track's extrapolated position landed on its neighbour). Feeding kit labels into the close-up tracker did not help either: overlapped crops read the wrong kit.
+- **Scoreboard (not a fix, premise was wrong).** 1006 is not a phantom person: it is a real, mostly hidden Alavés player at the left edge, with the scoreboard drawn over his head. Painting the graphic out (clip-wide pixel-stability mask, found the scoreboard cleanly) leaves his box unchanged (`[11,0,134,307]` → `[13,1,141,311]`, same keypoint visibility) and shifts other boxes (#11's top 112 → 55), so it was reverted. What is true: his pose has its head on the scoreboard, and edge bystanders overlapping #11 produce spurious incidents (23.22, 25.16, 25.69: 1006 / 1004 / 1008). Left as is; a cheaper handle is to lower confidence for boxes clipped by the frame edge.
+
+Re-run of the foul review (scratch copies; saved `var_data` still the old output): 44656413 23.0-28.0, 12.0-18.0 only differ in the 23.19 s flip, the un-flipped 25.16 s, and two newly visible pairs (24.22 s white player behind Mouriño's torso; 17.55 s): the corrected team labels freed candidate slots (the review keeps the top 6 by closeness), they are overlapping-body pairs with unverified contact. 1.0-7.0, 27.0-31.0 and 46064061 1.0-7.0 are unchanged.
+
+## Current plan (2026-10-21): measure whether verdicts are trustworthy
+
+User bar: the issue is not solved until the system produces trustworthy verdicts (Mbappé challenge or similar). Working definition: a verdict is trustworthy when its confidence matches how often it is right on incidents checked against the frames, and it says "inconclusive" when it should. The project has no labelled set, so no indicator's reliability is known (e.g. the 2D-overlap "hand / arm to the head, 0 cm, 0.75" in an uncalibrated replay is likely a false positive).
+
+State at this point (uncommitted, branch feature/virtual-var): `teams.crowded/decisive` team-vote change + `tests/test_teams.py` + rewritten thread-cap test + handoff edits. Committed already: tangle tracker, close-up swing direction, crossview message, handoff (4 commits). Second task (line-based replay camera start for crossview on 50158014) was started by the user in a SEPARATE session; do not run heavy CV jobs while it does.
+
+Evaluation set, in progress: `.claude/var-scratch/eval/` (persistent, not /tmp; the harness scratchpad is wiped between days and already lost the earlier overlays). `run_fouls_windows.sh` regenerates `fouls.json` + contact-frame overlays for 44656413 {23.0-28.0, 27.0-31.0, 12.0-18.0, 1.0-7.0} and 50158014 {3.7-10.2, 17.0-22.4}, one window at a time (progress: `eval/run.log`, ends with ALLDONE). `make_sheets.py` builds labelled contact sheets (`sheet_NN.jpg`, `incident_keys.json`). Next: hand-label each incident from the frames (contact real? direction right? studs visible? above the ankle?) into `eval/labels.json`, ask the user to spot-check some, compute per-indicator accuracy and confidence calibration, then fix what the numbers show to be unreliable (candidates: temporal consensus over the contact frames instead of one onset frame; depth-aware 2D checks for the arm-to-head indicator; calibrate or cap confidences). Labels are my judgement from low-resolution frames, not ground truth, and the official decisions must never be used to tune or grade.
+
+## Evaluation findings (2026-10-21, hand-looked at 41 incidents, 6 windows)
+
+Overlays + sheets live in `.claude/var-scratch/eval/` (sheet_NN.jpg, run_fouls_windows.sh, make_sheets.py). Labels are my reading of
+low-resolution crops, NOT verified by the user: treat as leads, not ground truth.
+
+Found and fixed (uncommitted, tests pass):
+- 12.0-18.0 of 44656413 is a yellow-card dispute with no foul. The system reported contacts (up to 0.7 confidence) involving the referee
+  as a team player. Causes: (1) the tracker had no label for kits that match neither team, so a referee track could continue onto a
+  player (analyze.track_shot now labels odd kits "X"); (2) odd-kit crops voted for a team (assign_tracks: they no longer vote);
+  (3) fouls._interp held a track's first/last box for 0.25 s, which in a crowd lands on a neighbour (now HOLD_S = 0.12).
+  After: the referee-as-challenger incident is gone; the remaining 14.41 s incident is a genuine shove between two players.
+
+Still wrong (not fixed, Mbappé window 23.0-28.0):
+- 23.29/23.36 s: contact 0.68/0.73 between two skeletons on bystanders at the left frame edge (one occluded behind the other). The real
+  tackle (white player's studs-first foot into the seated blue player's lower leg, ~23.4-23.6 s of the replay) is on screen but is not
+  the pair analysed there. Candidate ranking ("closeness") prefers a sustained overlap of bystanders over the actual tackle.
+- Tried and removed (no effect on the real case): IoU duplicate guard in find_candidates, keypoint-coincidence dedupe in closeup_analysis.
+  Next idea: require both skeletons to be distinct AND unclipped by the frame edge, and rank candidates by the contact distance rather
+  than box overlap duration.
+- Windows 27.0-31.0 @30.56/30.66: legs-only crop; contact claims (elbow->forearm) on a frame where no torso is visible.
+
+## Graded verdict, uncalibrated cap, depth cue (2026-10-21, branch `feature/foul-graded-verdict`)
+
+- **Graded lean** (`backend/var_fouls.py`: `_lean_*`, `lean_of`): inconclusive grounds and incidents carry `lean {reading: red|not_red|no_lean, probability, p_red [lo, hi], basis, settle[], decisive: false, note}`. Indicator confidence c -> P(correct) = 0.5 + 0.5c, independence assumed, enumerated exactly. Unmeasured indicators are left free (range), so a lean needs even the worst case to agree; an unmeasured ball is not an exclusion (as in the strict rule). `LEAN_MARGIN` 0.10. The % is NOT a validated hit rate; strict `RELY` 0.6 still decides anything called a verdict; strict grounds have `lean: null`. UI: `Lean` in `FoulReview.jsx`.
+- **Uncalibrated cap:** `fouls.UNCALIBRATED_MAX_CONF` 0.55 on a "touching" contact without calibration (never on "apart in the image").
+- **Painted-line replay calibration merged** (branch `claude/gifted-albattani-f40038`). Its replay has no time map (`shot.speed_unobserved`), so `challenger_speed` is now not observable on such shots.
+- **Depth cue: tested, NOT wired.** Depth-Anything-V2-Small disparity at the striking point vs the struck point (`.claude/var-scratch/depth/depth_cue.py`, 98 image-contact opposing pairs on calibrated wide frames, truth = pitch ground distance <= 1.2 m vs >= 2 m): AUC 0.55 (15 touching, 76 apart). Keeping 73% of true touches still passes 64-67% of pairs that are metres apart. Too weak to move any confidence; earlier whole-frame rank correlation (0.98) does not carry over to keypoint-level touch tests. Not validated on replay close-ups at all.
+
+## Definition of done and lanes (2026-10-21, from the user's pasted plan)
+
+What "trustworthy" means, replacing "flawless from any ESPN angle":
+- Decisive only when at least one metric (calibrated) view plus stable identities exist; otherwise `inconclusive` with the named failure.
+- A limitation is not a bug. A bug is: we had the views and the identities and still lied or swapped people.
+- Success is graded against human geometry ground truth (contact, direction, studs), never the official decision.
+
+Lanes: A = squeeze the monocular ESPN stack (identity through tangles -> cross-view -> uncertainty calibration on a hand-labelled set);
+B = new inputs (a second angle that calibrates on its own, time-synced clips of one incident, user-uploaded researcher mode);
+C = stadium-grade (surveyed multi-camera, GPU workers, review bay). Sequence: finish A (identity done; cross-view unblocking is the
+calibration session on claude/gifted-albattani-f40038) -> prove multi-view on ONE incident with two calibrated angles (B) -> only then decide on C.
+
+Done in this slice: the uncalibrated close-up contact confidence cap (0.55, below RELY 0.6; image-plane overlap cannot be told from players metres
+apart in depth) is in cv/var_cv/fouls.py (added on feature/foul-graded-verdict, with a test); the 10-incident spot-check sheet is
+eval/spot_check_10.jpg, and the user judged those spot checks not worth marking because they lack depth.
+
+## Open work — priority order
+
+1. ~~Live identity through tangles~~ done, see above. Remaining idea: a world-frame (pitch) velocity for calibrated shots if camera pans make image-space velocity unreliable.
+2. ~~Close-up foul fixes~~ done, see above, except: the live 3.24 s incident in 1.0-7.0 (new-tracker analysis) still reads blue defender → Mbappé at contact confidence 0.0 (pose models disagree by 15 px). The swing rule ran there and declined to decide: blue defender's knee 2.1 vs Mbappé's limb 3.3 body heights/s (1.6x, below the 3.0 needed), so the direction there is unresolved, not corrected. Also open: boxes clipped by the frame edge and bystanders overlapping the action produce spurious close-up incidents; a close-up contact has no depth check.
+3. ~~Re-run crossview~~ done 2026-10-12, **still fails**, and so the metric speed / contact height / DOGSO for the replays are still unavailable. With the corrected live identities (part 1), live 1.0-7.0 ← replay 23.0-28.0, `--anchor 3.237:23.19`: "no consistent camera: the best fit leaves the replay feet 3.0 sigma from the live players", 0/42 frames, chi^2 ~5000 and cameras 3 m high at the pitch corner, so the earlier diagnosis (live tracks swapping people) was not the whole story.
+   **Diagnosis (2026-10-12, loop: `.claude/var-scratch/tracking/crossview/`):** the replay cannot be calibrated from this live footage because there is too little identifiable, spread geometry, not because of a numerical bug.
+   - The live wide shot tracks only **three players within 8 m of the tackle** (Mbappé gid 25, Güler 4, the blue defender 23), all within 1.8 m of each other; the next nearest are 8-10 m away. Their live positions near the contact are also sparse: no calibrated live frame between 2.6 and 3.2 s (whip pan), Mbappé has no detection at 3.3 s.
+   - The replay's measurable feet are mostly **bystanders**: #11 (40/42 frames), Güler (32), Mouriño (31), an edge player (31); Mbappé has a foot in 16/42 frames and the falling defender in 11/42 (a lying player has no foot). Mouriño and #11 do not appear near the tackle in the live view.
+   - With the verified identities (Mbappé 1001 ↔ 25, defender 1003 ↔ 23) the solver says "underdetermined: no identified opponent pair moves or spreads enough" (5 s). Seeding #11 ↔ live 1 and Mouriño ↔ live 9 (the white/blue pair 7 m to the right in live; unconfirmed that they are those two) is also underdetermined.
+   - Güler ↔ 4 with the defender ↔ 23 (both correct) is what the automatic run's best hypothesis starts from; it still ends at a camera 3 m high at the pitch corner (C = [11.4, 6.7, -3.2], s = 0.17, chi^2 5049). The final rematch then pairs Mbappé with live 1 (8 m away) and Mouriño with 33 (10 m away).
+   - **The acceptance message misleads:** `feet_chi2` charges every replay foot with no live match the full cap (here 157 of 174 observations, 9 = "3 sigma"), and blames "wrong identities / swapping live tracks". The matched ones also fit badly (median chi^2 ~10 of 17), so the cap is not the root cause, but "3.0 sigma" is just the cap.
+   - Ruled out: the speed grid (extending it to 0.1-0.3 gives 8.66, still failing); the replay being the same main camera zoomed in (the far boards read Mahou/BKT/#LeaveYourMark live and LALIGA/GIGABAR in the replay, `live_vs_replay.jpg`).
+   - Lead (not resolved): the live shot shows a white + blue pair running together ~8 m right of the tackle (live ids 1 and 9, 3.0-3.8 s). The replay is probably a far-side camera (its boards, LALIGA / GIGABAR, are the near-side boards the live camera cannot show), so #11 and Mouriño may be exactly that pair seen along the replay's line of sight. Seeding them (`((1004, 1), (1002, 9))`) gives 57 seed points spread 9.7 m, so the data gate passes, but `fit_ref` returns None for every start (`crossview.py` `fit_ref` keeps only fits with the camera centre >= 0.5 m above ground, `p[2] < -0.5`), i.e. no camera through those 57 correspondences. Either those two are not #11 / Mouriño, or the reference-camera fit has a problem; not separated yet.
+   - **Message fixed (2026-10-13):** `crossview.feet_failure` now says what the numbers say ("17 of 174 replay foot observations (4 of 8 replay people) match a live player, spanning 19.1 m, and those are 2.8 sigma off. Most replay people are not tracked in the live shot (or could not be identified), so a camera cannot be checked against them"); the old identity blame stays only when most feet do match. Test in `cv/tests/test_crossview.py` (7 pass).
+   - **Viability of "try other replays / clips" (checked 2026-10-13, not built):** not viable with the local footage. Shot structure of the Mbappé clip (65 s, 13 shots): live wide 0-17.5; close-up reactions 17.6-22.2; replay 1 22.8-27.2; replay 2 (low side-on, #FANCAM) 27.8-30.7; a wide shot at game clock 37:36 (not a replay) 31.6-37.4; VAR-room split screens 38.6-40.3 and 41.2-54.2 (the latter shows replay 1's angle again in a small window: no new geometry). Replay 2 is worse than replay 1 for this purpose: 5 people, only 7 of 30 frames with >= 4 usable feet (replay 1: 29 of 42), and the same 3 live-tracked players near the tackle. Gayà clip 46064061: the live wide shot has 5 tracked players and the incident pair has 0 others within 5 m, 2 within 10 m; its replays are close-ups of two players (21.8-24.9, 25.3-29.8) plus one wide replay (16.8-21.4). Barça-Getafe 46338651 has a rich live view (19 tracked players, 11 within 15 m of the incident) but it is an offside play that does not need a replay calibration, and its other calibrated windows are different plays. What would make it viable: an incident with >= 4 live-tracked players spread over >= 5 m near it **and** a replay that shows several of them with measurable feet (a wide tactical replay, not a close-up). Screening such clips across ESPN's lists (per event: live tracked players within 15 m of the incident; per replay shot: people with usable feet) would be the first step, and needs new clips rather than new code.
+   - **Screening of new ESPN clips (2026-10-13, `.claude/var-scratch/tracking/screening/`):** downloaded 7 red-card / sent-off clips (203 MB, approved) to `var_data/<ESPN id>/video.mp4`: 49837939 Racing-Rayo, 49851937 Sevilla-Espanyol, 49861255 Celta-Getafe, 49950959 Espanyol-Rayo, 49966794 Getafe-Betis, 50150484 Villarreal-Real Madrid, 50158014 Real Sociedad-Deportivo. Gates: live window calibrated with >= 4 tracked players within 15 m of the incident spread >= 5 m; replay with >= 4 measurable feet in half the frames.
+     - **50158014 Real Sociedad-Deportivo (Pablo Marín red card, corner scrum): passes both.** Live 3.7-10.2: 93% calibrated, 14 tracked players per frame, 9-12 within 15 m of the closest opposing pair, spread 14-15 m. Replay 17.0-22.4 (overhead tactical camera, the 6-yard box / penalty area / goal painted and visible): median 17 people with measurable feet, >= 4 in 54/54 frames, 0 calibrated by the keypoint detector. Replays 23.1-28.4 (low behind-goal, median 2 feet, 17/53 frames >= 4) and 29.0-36.1 (median 4, 43/72) are weaker. Live and replay show the same corner scramble (scoreboard 65:24-65:29 live, 65:57-66:00 replay).
+     - 49966794 Getafe-Betis: fails, 0% calibrated in every window including the live one ("keypoints inconsistent"; zoomed side view). 49851937 Sevilla-Espanyol live 15.0-22.5 and 49837939 Racing-Rayo live 5.0-11.2: 0% calibrated. 49861255, 49950959, 50150484: not analysed (contact sheets show reaction close-ups and at most one two-player replay).
+     - Not yet done for 50158014: run fouls on live 3.7-10.2 and replay 17.0-22.4 to get the incident times, pick the anchor (live t <-> replay t) by checking the frames, then `python -m var_cv.crossview --replay ... --live ... --anchor LIVE_T:REPLAY_T`. Do not let it pair incidents automatically (12 anchors took > 40 min on the Mbappé clip). Success = status done, calibrated frames, replay lines reprojecting onto the painted 6-yard box / penalty area. Because this replay shows painted lines, it can also serve Open work #4 (ground truth): compare against a line-based calibration of the replay itself.
+     - **Cross-view run on 50158014 (2026-10-19): failed.** Live 3.7-10.2 <- replay 17.0-22.4, anchor 7.12:20.4 (chosen from the frames: scrum builds ~5 s live / ~18 s replay, keeper dives ~7.1-7.9 s live / ~21 s replay, i.e. offset ~13.3 s, the replay at normal speed; not from any foul decision), `MAX_SEEDS` capped to 60, ~25 min: "6 of 746 replay foot observations (5 of 53 replay people) match a live player ... 2.8 sigma off", cameras at absurd positions (chi^2 4e4-1e5). Replay tracking is fragmented (53 tracks for ~15 people).
+     - **But the data agree (diagnostic only; hand-placed, never pipeline input, the honesty rules forbid manual positions in output):** a homography read off the replay frame at 20.4 s from the painted lines (6-yard box corners, penalty-area corner, goal line; goal at x = 0, image-up = low y) fits those corners to <= 0.15 m. Mapping the replay's players through it and matching one-to-one with the live positions at the synced time, ignoring teams and identities, gives 6-7 of 14 within 2 m (median 1.8-2.4 m); the mirrored orientation gives 0-3 of 14 (median 5-7 m). So live and replay show the same scrum and the solver's identity / camera search is what loses it.
+     - Likely causes, not yet separated: (1) team labels (checked 2026-10-21 against zoomed crops, correcting an earlier overstatement here): most are right (striped Sociedad = A, all-dark Deportivo = B); in the scrum frame (live 7.1 s) about 4 of 16 are wrong or doubtful: the light-blue keeper is an outfield player (tracks 28 and 14 are one keeper; his cyan kit is closer to the A centre than the B one, so it is never "odd"), a fast blurred dark player (track 1, 17 A / 11 B crops) and a box holding a striped and a dark player (track 4); the 3 "referees" are officials (5, 15, 27). The solver requires compatible teams and an opposing pair as seed, which these few can still block; (2) the camera is initialised only from identity-paired feet (`grid_ref`), so wrong seeds give a far-off start that painted lines cannot rescue; (3) the 60-seed cap may have dropped the right seed.
+     - **The project's own detector nearly calibrates this replay:** the replay frames fail with "line check failed (support 0.32-0.36, worst line 0.11, position uncertainty 0.56-0.71 m)", i.e. a keypoint homography exists and only the painted-line support check rejects it. That is the cheapest lead for a real fix: initialise the replay camera from painted lines (and relax team compatibility to a soft cost when labels are poor), then match positions instead of searching a free camera. Also gives Open work #4 a ground truth (the hand calibration above, compared against any automatic result).
+     - **Team-vote change (2026-10-21):** `teams.crowded` / `teams.decisive` (shared by `analyze.assign_tracks` and the close-up `fouls.team_votes`): crops of overlapping boxes count x0.25 and a team needs 70% of the weighted votes, else the track has no team. Measured effect is small: Mbappé clip 44656413 1.0-7.0 0 of 46 labelled tracks change (key players stay A / A / B at 100%); Sociedad live 3.7-10.2 1 of 47 (track 14, the keeper, B -> none). It does not fix the keeper (track 28 still A: 23 A / 10 B crops, 70%), the blurred player or the mixed box; those need a keeper-aware kit model (3+ clusters) or an overlap-aware crop, not done. So team labels are NOT the main reason crossview fails on 50158014; the camera initialisation and the 60-seed cap remain the leads.
+     - Machine note: during this screening the load average reached 149 once (a 47-minute window) with total CPU only 63-80% afterwards; no thermal warning recorded; the job was capped at 4 threads under `nice`. Other apps (ChatGPT/Codex processes) were running. Check `uptime` before each heavy job as the constraints section says.
+   - **Painted-line start (2026-10-21, branch `claude/gifted-albattani-f40038`, new `cv/var_cv/paintcam.py` + `crossview.solve_lines`): 50158014 now ends `done`, 54/54 frames, ~50 s.** `python -m var_cv.crossview --replay var_data/50158014/17.0-22.4 --live var_data/50158014/3.7-10.2 --video var_data/50158014/video.mp4 --anchor 7.12:20.4`. Overlays (`.claude/var-scratch/tracking/crossview/ov_soc`, sheet `ov_sheet.jpg`): the projected model lines sit on the painted goal line / 6-yard box / penalty area / arc at 17.1, 20.4 and 22.4 s.
+     - How: Hough lines on the skeleton of `pitch.line_mask` -> every assignment of 2 detected lines to 2 constant-x and 2 to 2 constant-y template lines (goal line, 6-yard front, penalty front, halfway; box sides, touchlines), 4-line homography, ranked by template-on-paint + paint-explained, refined with `pitch.refine` and kept only if `pitch.passes` (no gate touched: support 0.89, worst line 0.79, error 0.07 m at 20.4 s). Neighbour frames start from the previous frame's camera through the camera motion and must pass the same gate. Teams, identities and tracks are not used at all (soft team cost became unnecessary).
+     - **Ground truth:** at 20.4 s the accepted homography reprojects the six hand corners within 1.9-7.9 px (<= ~0.2 m); a physical-camera fit of it gives C ~ (0.2, 113, -24) m, f ~ 4900, principal point shifted ~-150 px (a digitally cropped replay) against the hand camera (0, 116, -26) m, f 5054.
+     - **The live players choose the pitch end** (paint is half-turn symmetric): 326 soft matches vs 0 at the other end, 69% of replay people within 2 m of a distinct live player at the best frame-wise time map; below `MIN_MATCH` 0.4 the calibration is rejected ("not confirmed by the live players"), tested.
+     - **What is NOT solved: the time map.** Frame-wise, the best live time for replay 18.3-20.7 s is a constant ~6.4 s (and 5.8 s at 17.1, 6.0 s at 22.2): the replay is a near-freeze / extreme slow motion of a nearly static scrum (best s ~0.05-0.1, offset -0.8 s from the 7.12 anchor), not the normal-speed replay assumed when the anchor was chosen. The joint solver with the line camera as start (kept in the scratch folder, `crossview_joint_attempt.py`) reproduced the same camera (C ~ (0.3, 114.5, -24.4)) but could not fit identities / speed: chi^2 flat in s (41k-47k for s 0.07-0.24), 200 of 746 foot observations matched; 12+ min per run. So `solve_lines` returns `speed`/`offset_s` None, `calibration.source = "painted_lines"`, `shot.speed_unobserved = true`; **replay speeds, ball speed and ball3d gravity from this shot assume normal playback and are wrong if the replay is slow motion**: do not trust metric speeds from it. (Backend and frontend only read `source` / `homography`; `painted_lines` shows as a plain calibrated frame, not the cross-view colour.)
+     - Limits: needs >= 2 lines of each pitch direction passing the line checks in a frame within 8 samples of the anchor (else the player-feet solver runs, unchanged); other segments of a multi-segment replay get no camera; a replay showing paint of the centre circle only (no straight lines) is not handled.
+     - Tests: `cv/tests/test_crossview.py::test_painted_lines_*` (synthetic goal-area replay at either end; rejection when no live player stands there).
+   - Not tested: whether #11 / Mouriño are in the live shot at all (hidden behind the clump?), which would give the spread the solver needs. Options: report "underdetermined (n matched people, spread m)" instead of the identity blame; calibrate the live whip-pan frames (2.7-3.1 s); try crossview on replays that show more live-tracked players.
+   Cost warning: without `--anchor` it pairs 3 live x 4 replay incidents = 12 anchors x up to 400 seeds x 9 speeds and had not finished after 40 min of CPU; with one anchor it takes ~5 min.
+   **Multi-angle without calibration** (`backend/var_fouls.combine`, what "Combine angles" runs): both replays now agree on direction: A (Mbappé's white side) challenges B: 23.19 s right foot to thigh (0.25) and 29.296 s right foot to shin (0.39, sole towards the opponent 0.28). Combined: contact 0.39, above the ankle 0.32, sole 0.28, lunge false, straight leg false, challenging for the ball false 0.18, speed and all DOGSO factors not observable (no calibration), "hand / arm to the head" 0.75 from a 2D overlap in replay A (uncalibrated, not depth-checked) -> **inconclusive on every ground** (the system's policy needs 60%). Adding the live angle is refused: it still reads B -> A (confidence 0, swing 2.1 vs 3.3, below the 3x override), i.e. the angles disagree on who challenged.
+   **Other camera angles do not exist on ESPN for this incident:** event 704966 lists 4 clips (44656317 Camavinga goal, 44656258 VAR-wiped opener, 44656413 the Mbappé challenge, 44656943 Alavés red); only 44656413 shows it. The available angles are the live shot and the two replays inside that one clip. `var_data/46243083` (28 s) is not one of this match's clips.
+4. **Ground-truth test** for crossview: find a replay from a different camera that detect-calibrates on its own.
+5. Not implemented in crossview: per-frame fallback for translating cameras, pass-event anchors, appearance tie-breaks.
+
+Checks: backend 184, frontend 74 (lint + build clean) as reported at the last commit and **not re-run** for the tracker / close-up changes (cv only); cv 63 pass (full suite 2026-10-21, 10 min 28 s, after the team-vote change; 59 before + 1 crossview message test + 3 in `tests/test_teams.py`; one thread-cap test was rewritten, see below); earlier: 59 pass in 10 min 29 s, then `tests/test_crossview.py` re-run alone after the message change: 7 pass in 10 min 13 s (52 + 3 tracker tests + 1 plain-association test in `cv/tests/test_geometry.py`, + swing / initiator / team-vote tests in `cv/tests/test_fouls.py`).
+
+Thread cap (found 2026-10-21, NOT fixed): `analyze.py` calls `cv2.setNumThreads(CPU_THREADS)` (4), but this OpenCV build parallelises with Apple GCD, which ignores any value above 1 (`cv2.getNumThreads()` stays 8 after importing `analyze`; `fouls.py` and `crossview.py` already use `setNumThreads(0)` for that reason). The "thread caps (4) are already set in code" constraint above therefore does not hold for the cv2 part of `var_cv.analyze`. Whether `setNumThreads(0)` there would cut heat/load without making a 5 s window much slower is untested. A test that imported `analyze` first (test_teams.py) exposed it: `test_opencv_threads_are_capped` now checks a fresh interpreter.
+
+Performance: a 5 s window takes ~40–90 s on the Air when it is the only job; foul review 20 s – 6 min per window.

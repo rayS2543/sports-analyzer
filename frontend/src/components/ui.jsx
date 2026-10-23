@@ -47,6 +47,9 @@ export function SiteHeader({ back = false }) {
         )}
         {!back && (
           <nav className="flex items-center gap-4" aria-label="Primary">
+            <Link to="/var" className="pressable text-sm font-medium text-muted hover:text-fg">
+              VAR
+            </Link>
             <Link to="/elo" className="pressable text-sm font-medium text-muted hover:text-fg">
               Elo
             </Link>
