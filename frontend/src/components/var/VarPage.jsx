@@ -36,6 +36,56 @@ function Loading({ label }) {
   );
 }
 
+const daysBefore = (iso, n) => new Date(Date.parse(`${iso}T00:00:00Z`) - n * 864e5).toISOString().slice(0, 10);
+
+// Offside calls ESPN's commentary pairs with a VAR check, across two weeks, so nobody scrolls through recaps.
+function FindReviews({ league, date, onPick }) {
+  const [state, setState] = useState({});
+  const search = () => {
+    setState({ loading: true });
+    axios
+      .get(`${API_BASE}/var/discover`, { params: { league, from: daysBefore(date, 13), to: date, kind: "offside" } })
+      .then((res) => setState({ reviews: res.data?.reviews || [] }))
+      .catch((err) => setState({ error: apiError(err, "Couldn't search ESPN's commentary.") }));
+  };
+  useEffect(() => setState({}), [league, date]);
+  return (
+    <div className="p-4 sm:p-5 border-b border-line flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <button type="button" onClick={search} disabled={state.loading} className="pressable h-8 px-3 rounded-lg border border-line text-sm font-medium hover:border-faint">
+          Find VAR offside reviews
+        </button>
+        <span className="text-xs text-faint">
+          {LEAGUE_NAMES[league]}, the 14 days up to {formatDay(date)}. Taken from ESPN&apos;s match commentary; a clip is attached when its headline names the player.
+        </span>
+      </div>
+      {state.loading && <Loading label="Searching ESPN" />}
+      {state.error && <Note tone="text-loss">{state.error}</Note>}
+      {state.reviews?.length === 0 && <Note>No VAR offside review with commentary in this range. Try an earlier date.</Note>}
+      {state.reviews?.length > 0 && (
+        <ul className="flex flex-col gap-1">
+          {state.reviews.map((r) => (
+            <li key={`${r.event}-${r.minute}`} className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm hover:bg-raised/60">
+              <span className="flex-1 min-w-0">
+                <span className="font-medium">{r.match}</span>
+                <span className="text-faint"> · {r.minute} · </span>
+                <span>{r.player || "player unknown"}: {r.outcome}</span>
+              </span>
+              {r.clip ? (
+                <button type="button" onClick={() => onPick(r)} className="pressable shrink-0 text-accent font-medium hover:underline" aria-label={`Open the clip for ${r.match} ${r.minute}`}>
+                  Open clip
+                </button>
+              ) : (
+                <span className="shrink-0 text-xs text-faint">no ESPN clip</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 const Note = ({ children, tone = "text-muted" }) => <p className={`text-sm ${tone}`}>{children}</p>;
 
 const kickoff = (iso) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
@@ -299,6 +349,15 @@ export default function VarPage() {
               />
             </Step>
           </div>
+
+          <FindReviews
+            league={league}
+            date={date}
+            onPick={(r) => {
+              update({ date: r.date, event: r.event, clip: r.clip.id, start: null, end: null });
+              setPickerOpen(false);
+            }}
+          />
 
           <div className="grid grid-cols-1 md:grid-cols-2 md:divide-x divide-line">
             <Step n={3} title="Match" aside={formatDay(date)} className="p-4 sm:p-5 border-b md:border-b-0 border-line">

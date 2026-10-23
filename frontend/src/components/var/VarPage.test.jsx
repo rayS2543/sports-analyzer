@@ -99,6 +99,26 @@ const renderAt = (path) =>
 const WINDOW_LINK = "/var?league=PD&event=748191&clip=46338651&start=12.0&end=16.2";
 
 describe("VarPage", () => {
+  it("finds VAR offside reviews from commentary and opens the clip ESPN lists for one", { timeout: 20000 }, async () => {
+    const user = userEvent.setup();
+    const clip = { id: "49827977", title: "Carlos Espi's bicycle kick ruled out", duration_seconds: 58, source_url: SOURCE, page_url: null };
+    const base = axios.get.getMockImplementation();
+    axios.get.mockImplementation((url, config) =>
+      url === `${API}/var/discover`
+        ? Promise.resolve({ data: { reviews: [
+            { event: "401882894", match: "Real Madrid at Real Betis", date: "2026-09-04", minute: "87'", player: "Carlos Espí", outcome: "goal ruled out", offside: true, clip },
+            { event: "401882895", match: "Getafe at Sevilla", date: "2026-09-03", minute: "12'", player: "Mayoral", outcome: "goal ruled out", offside: true, clip: null },
+          ] } })
+        : base(url, config)
+    );
+    renderAt("/var?date=2026-09-10");
+    await user.click(await screen.findByRole("button", { name: "Find VAR offside reviews" }));
+    expect(axios.get).toHaveBeenCalledWith(`${API}/var/discover`, { params: { league: "PD", from: "2026-08-28", to: "2026-09-10", kind: "offside" } });
+    expect(await screen.findByText("no ESPN clip")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Open the clip for Real Madrid at Real Betis 87'/ }));
+    expect(axios.get).toHaveBeenCalledWith(`${API}/var/clips`, { params: { league: "PD", event: "401882894" } });
+  });
+
   it("walks fixture → clip → ESPN preview → analyze these seconds → viewer", { timeout: 20000 }, async () => {
     const user = userEvent.setup();
     const { container } = renderAt("/var");
