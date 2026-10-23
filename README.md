@@ -15,11 +15,13 @@ player detail across five top European leagues.
   Ligue 1 in one feed.
 - **Match tracker & standings** per league, with recent results and the
   current table.
-- **Match predictions** for upcoming fixtures, via a simple Elo rating model
-  trained on the last 90 days of results.
+- **Elo power ratings** for each league (live table + team pages), with match
+  tips that split home / draw / away from the last 90 days of results.
 - **Match detail pages** with real lineups (via FotMob's public match pages,
   no key required) and **player profile pages** (via API-Football).
 - **News feed** per query, pulled from Google News RSS.
+- **Team pages** with season table row, recent form, last starting XI, squad
+  roster, recent results, and upcoming fixtures — plus news.
 - **Team form analytics**, built from a locally persisted match history that
   survives beyond football-data.org's rolling 10-day window.
 - In-memory response caching to stay within free-tier API rate limits.
@@ -43,12 +45,12 @@ sports-analyzer/
 │   ├── football_client.py       # football-data.org client
 │   ├── api_football_client.py   # API-Football client (player stats)
 │   ├── fotmob_client.py         # FotMob match-page client (free, keyless lineups)
-│   ├── elo.py                   # Elo rating model for predictions
+│   ├── elo.py                   # Elo rating model (HA, MoV, 3-way tips)
 │   ├── cache.py                 # in-memory TTL cache decorator
 │   ├── db.py                    # SQLite-persisted match history for analytics
 │   ├── routes/
 │   │   ├── football.py          # /leagues, /matches, /matches/today, /teams, /standings
-│   │   ├── predictions.py       # /predictions
+│   │   ├── predictions.py       # /predictions, /ratings
 │   │   ├── matches_detail.py    # /matches/detail (lineups, via FotMob)
 │   │   ├── players.py           # /players/<id>
 │   │   ├── news.py              # /news
@@ -59,7 +61,7 @@ sports-analyzer/
 │   └── tests/
 ├── frontend/
 │   ├── src/
-│   │   ├── App.jsx              # routes: Dashboard / match detail / player detail
+│   │   ├── App.jsx              # routes: Dashboard / Elo / match / player / team
 │   │   └── components/
 │   ├── package.json
 │   └── vite.config.mjs
@@ -97,8 +99,10 @@ The API is available at `http://127.0.0.1:5001`.
 | `GET /matches/today`   | Today's fixtures across every supported league         |
 | `GET /matches?league=` | Recent matches for a league (defaults to La Liga)      |
 | `GET /teams?league=`   | Club directory for a league                            |
+| `GET /teams/detail?league=&name=` | Club profile: squad, form, table row, recent + upcoming matches |
 | `GET /standings?league=` | Current league table                                 |
-| `GET /predictions?league=` | Upcoming fixtures with Elo-based win probabilities |
+| `GET /predictions?league=` | Upcoming fixtures with Elo home/draw/away probabilities |
+| `GET /ratings?league=`     | League Elo table (rank, rating, delta, matches used) |
 | `GET /matches/detail`  | Lineups + player stats for a specific fixture           |
 | `GET /players/<id>`    | Player profile and season stats                         |
 | `GET /news?query=`     | News headlines for a search query                        |

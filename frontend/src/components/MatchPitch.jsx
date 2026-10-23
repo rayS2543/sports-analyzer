@@ -1,4 +1,4 @@
-import React, { useId, useState } from "react";
+import React, { useEffect, useId, useRef, useState } from "react";
 import { EmptyNote } from "./ui";
 
 export const TEAM_COLORS = { home: "#f4a08b", away: "#92c9ec" };
@@ -76,47 +76,129 @@ export function shotOutcome(shot) {
 
 const shotMinute = (shot) => `${shot.min ?? "–"}${shot.minAdded ? `+${shot.minAdded}` : ""}′`;
 const words = (text) => text?.replace(/([a-z])([A-Z])/g, "$1 $2") || "–";
+const isNum = (value) => typeof value === "number" && Number.isFinite(value);
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
-export default function ShotMap({ shots, home, away }) {
+export const OUTCOME_COLORS = { Goal: "#5fe08f", "Own goal": "#5fe08f", Saved: "#f2c14e", Woodwork: "#f2c14e", Blocked: "#ef8354", "Off target": "#a9b8b0" };
+// Goal mouth in FotMob's frame: posts at y 30.34–37.66 on the x=105 line, bar at 2.44 m.
+const GOAL = { left: 30.34, right: 37.66, bar: 2.44 };
+const GOAL_VIEW = { left: 27, right: 41, top: 3.7 };
+
+// Where the ball ended up, in FotMob's frame (every shot attacks x=105).
+// Returns null when the feed has no end location, rather than guessing one.
+export function shotEnd(shot) {
+  if (shot.isBlocked) return isNum(shot.blockedX) && isNum(shot.blockedY) ? { x: shot.blockedX, y: shot.blockedY } : null;
+  return isNum(shot.goalCrossedY) ? { x: 105, y: clamp(shot.goalCrossedY, 0, 68) } : null;
+}
+
+// Shooter's view of the goal: screen-left is low y because shooters face +x, so no mirroring by team.
+// `keeper` flips it to the goalkeeper's view, facing the shooter.
+function GoalMouth({ shots, selectedId, onSelect, onHover, onLeave, keeper }) {
+  const plotted = shots.filter((shot) => !shot.isBlocked && isNum(shot.goalCrossedY) && isNum(shot.goalCrossedZ));
+  const { left, right, top } = GOAL_VIEW;
+  return (
+    <figure className="goal-mouth">
+      <svg viewBox={`${left} ${-top} ${right - left} ${top + 0.3}`} role="group" aria-label="Where shots crossed the goal line">
+        <path d={`M${left} 0H${right}`} className="goal-ground" />
+        <path d={`M${GOAL.left} 0V${-GOAL.bar}H${GOAL.right}V0`} className="goal-frame" />
+        {plotted.map((shot) => {
+          const outcome = shotOutcome(shot);
+          const offTarget = outcome === "Off target";
+          const selected = shot.id === selectedId;
+          return (
+            <circle
+              key={shot.id}
+              data-shot={shot.id}
+              cx={clamp(keeper ? left + right - shot.goalCrossedY : shot.goalCrossedY, left + 0.25, right - 0.25)}
+              cy={-clamp(shot.goalCrossedZ, 0.2, top - 0.25)}
+              r={offTarget ? 0.16 : 0.22}
+              fill={OUTCOME_COLORS[outcome]}
+              fillOpacity={offTarget && !selected ? 0.55 : 1}
+              stroke={selected ? "#fff" : "#10251f"}
+              strokeWidth={selected ? 0.09 : 0.04}
+              onClick={() => onSelect(shot.id)}
+              onMouseEnter={() => onHover(shot.id)}
+              onMouseLeave={onLeave}
+            ><title>{`${shot.playerName} · ${shotMinute(shot)} · ${outcome}`}</title></circle>
+          );
+        })}
+      </svg>
+      <figcaption>{keeper ? "Keeper's view · shots on target faced" : "Goal view · where each shot crossed the line"}</figcaption>
+    </figure>
+  );
+}
+
+export default function ShotMap({ shots, home, away, keeper = false }) {
   const [teamFilter, setTeamFilter] = useState("all");
   const [period, setPeriod] = useState("all");
   const [player, setPlayer] = useState("all");
   const [selectedId, setSelectedId] = useState(null);
+  const [hoverId, setHoverId] = useState(null);
+  const [showAll, setShowAll] = useState(false);
+  const hoverTimer = useRef();
+  const tooltipId = useId();
+  useEffect(() => () => clearTimeout(hoverTimer.current), []);
   if (!shots) return <EmptyNote>Shot map not available for this match yet.</EmptyNote>;
   if (!shots.length) return <EmptyNote>No shots recorded for this match yet.</EmptyNote>;
 
   const teamShots = shots.filter((shot) => teamFilter === "all" || String(shot.teamId) === teamFilter);
-  const players = [...new Map(teamShots.map((shot) => [String(shot.playerId), shot.playerName])).entries()];
+  const counts = new Map();
+  teamShots.forEach((shot) => {
+    const entry = counts.get(String(shot.playerId)) || { name: shot.playerName, count: 0 };
+    counts.set(String(shot.playerId), { ...entry, count: entry.count + 1 });
+  });
+  const players = [...counts].sort(([, a], [, b]) => b.count - a.count || a.name.localeCompare(b.name));
   const visible = teamShots.filter((shot) => (period === "all" || shot.period === period) && (player === "all" || String(shot.playerId) === player));
   const selected = visible.find((shot) => shot.id === selectedId);
-  const selectedIndex = selected ? visible.indexOf(selected) : -1;
+  const tipShot = visible.find((shot) => shot.id === hoverId) || selected;
   const color = (shot) => TEAM_COLORS[shot.teamId === home.id ? "home" : "away"];
-  const changeFilter = (setter, value) => { setter(value); setSelectedId(null); };
+  // FotMob normalizes every shot toward x=105; rotate away shots so the teams attack opposite ends.
+  const toPitch = (shot, point) => (shot.teamId === home.id ? point : { x: 105 - point.x, y: 68 - point.y });
+  const percent = (point) => ({ left: `${point.x / 105 * 100}%`, top: `${point.y / 68 * 100}%` });
+  const changeFilter = (setter, value) => { setter(value); setSelectedId(null); setHoverId(null); };
+  const startHover = (id) => { clearTimeout(hoverTimer.current); hoverTimer.current = setTimeout(() => setHoverId(id), 350); };
+  const endHover = () => { clearTimeout(hoverTimer.current); setHoverId(null); };
+  const select = (id) => { endHover(); setSelectedId((current) => (current === id ? null : id)); };
+  // Default: only the clicked shot's path. The toggle adds every visible shot's, with the selected one emphasised.
+  const pathShots = (showAll ? visible : selected ? [selected] : []).filter(shotEnd);
+  if (selected && showAll) pathShots.push(pathShots.splice(pathShots.indexOf(selected), 1)[0]);
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-4">
       <div className="shot-filters">
-        <label>Team<select aria-label="Team" value={teamFilter} onChange={(e) => { changeFilter(setTeamFilter, e.target.value); setPlayer("all"); }}>
+        {!keeper && <label>Team<select aria-label="Team" value={teamFilter} onChange={(e) => { changeFilter(setTeamFilter, e.target.value); setPlayer("all"); }}>
           <option value="all">Both teams</option><option value={home.id}>{home.team_name}</option><option value={away.id}>{away.team_name}</option>
-        </select></label>
+        </select></label>}
         <label>Period<select aria-label="Period" value={period} onChange={(e) => changeFilter(setPeriod, e.target.value)}>
           <option value="all">All periods</option>
           {[...new Set(shots.map((shot) => shot.period).filter(Boolean))].map((value) => <option key={value} value={value}>{words(value)}</option>)}
         </select></label>
-        <label>Player<select aria-label="Player" value={player} onChange={(e) => changeFilter(setPlayer, e.target.value)}>
-          <option value="all">All players</option>{players.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+        <label>{keeper ? "Shooter" : "Player"}<select aria-label="Player" value={player} onChange={(e) => changeFilter(setPlayer, e.target.value)}>
+          <option value="all">All players</option>{players.map(([id, { name, count }]) => <option key={id} value={id}>{name} ({count})</option>)}
         </select></label>
       </div>
-      <div className="flex justify-between gap-4 text-xs text-muted">
+      <GoalMouth keeper={keeper} shots={visible} selectedId={selected?.id} onSelect={select} onHover={startHover} onLeave={endHover} />
+      {!keeper && <div className="flex justify-between gap-4 text-xs text-muted">
         <span><span style={{ color: TEAM_COLORS.home }}>●</span> {home.team_name} →</span>
         <span className="text-right">← {away.team_name} <span style={{ color: TEAM_COLORS.away }}>●</span></span>
-      </div>
-      <div className="football-pitch shot-pitch" aria-label="Shot locations">
+      </div>}
+      <div className="football-pitch shot-pitch" aria-label="Shot locations" onClick={(e) => e.target === e.currentTarget && setSelectedId(null)}>
         <PitchLines />
+        {pathShots.length > 0 && (
+          <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 105 68" preserveAspectRatio="none" aria-hidden="true">
+            {pathShots.map((shot) => {
+              const from = toPitch(shot, shot), to = toPitch(shot, shotEnd(shot));
+              const outcome = shotOutcome(shot), isSel = shot.id === selected?.id;
+              return (
+                <g key={shot.id} opacity={isSel || !showAll ? 1 : 0.4}>
+                  <line data-testid="shot-line" x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke={OUTCOME_COLORS[outcome]} strokeWidth={isSel ? 2 : 1} strokeLinecap="round" strokeDasharray={shot.isBlocked ? "4 3" : undefined} vectorEffect="non-scaling-stroke" />
+                  <circle cx={to.x} cy={to.y} r={isSel ? 0.9 : 0.55} fill={OUTCOME_COLORS[outcome]} stroke="#10251f" strokeWidth="0.25" />
+                </g>
+              );
+            })}
+          </svg>
+        )}
         {visible.map((shot) => {
-          // FotMob normalizes shots toward x=105 on a 105 × 68 metre pitch.
-          // Rotate away shots so the teams attack opposite ends.
-          const isHome = shot.teamId === home.id;
           const goal = shot.eventType === "Goal" || shot.isOwnGoal;
           const size = 9 + Math.sqrt(Math.max(0, Math.min(1, shot.expectedGoals || 0))) * 17;
           return (
@@ -124,35 +206,51 @@ export default function ShotMap({ shots, home, away }) {
               key={shot.id}
               type="button"
               className="shot-marker"
-              style={{ left: `${(isHome ? shot.x : 105 - shot.x) / 105 * 100}%`, top: `${(isHome ? shot.y : 68 - shot.y) / 68 * 100}%`, "--team-color": color(shot), "--shot-size": `${size}px` }}
+              style={{ ...percent(toPitch(shot, shot)), "--team-color": color(shot), "--shot-size": `${size}px` }}
               data-goal={goal}
               data-selected={selected?.id === shot.id}
               aria-pressed={selected?.id === shot.id}
               aria-label={`${shot.playerName}, ${shotMinute(shot)}, ${shotOutcome(shot)}`}
-              title={`${shot.playerName} · ${shotMinute(shot)} · ${shotOutcome(shot)}`}
-              onClick={() => setSelectedId(shot.id)}
+              aria-describedby={tipShot?.id === shot.id ? tooltipId : undefined}
+              onClick={() => select(shot.id)}
+              onMouseEnter={() => startHover(shot.id)}
+              onMouseLeave={endHover}
+              onFocus={() => startHover(shot.id)}
+              onBlur={endHover}
             ><span>{goal ? "★" : shot.isBlocked ? "×" : shot.isOnTarget ? "•" : ""}</span></button>
           );
         })}
+        {!visible.length && <p className="shot-empty">No shots match these filters.</p>}
+        {tipShot && <ShotTooltip id={tooltipId} shot={tipShot} point={toPitch(tipShot, tipShot)} />}
       </div>
       <div className="flex flex-wrap justify-between gap-2 text-xs text-muted">
-        <span>★ Goal &nbsp; • Saved &nbsp; ○ Off target &nbsp; × Blocked</span><span>Dot size = xG · {visible.length} shots</span>
+        <span>★ Goal &nbsp; • Saved &nbsp; ○ Off target &nbsp; × Blocked</span>
+        <label className="inline-flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> Show all shot paths</label>
+        <span>Dot size = xG · {visible.length} shots · Hover for details, click for the shot path</span>
       </div>
-      <div className="shot-detail" aria-live="polite">
-        {selected ? <>
-          <div className="flex items-start justify-between gap-3">
-            <div><p className="text-xs font-medium mb-1" style={{ color: color(selected) }}>{shotOutcome(selected)} · {shotMinute(selected)}</p><h3 className="text-lg font-semibold">{selected.playerName}</h3></div>
-            <div className="flex items-center gap-2 text-xs text-muted">
-              <span>{selectedIndex + 1} / {visible.length}</span>
-              <button type="button" className="shot-nav" aria-label="Previous shot" disabled={selectedIndex === 0} onClick={() => setSelectedId(visible[selectedIndex - 1].id)}>←</button>
-              <button type="button" className="shot-nav" aria-label="Next shot" disabled={selectedIndex === visible.length - 1} onClick={() => setSelectedId(visible[selectedIndex + 1].id)}>→</button>
-            </div>
-          </div>
-          <dl className="grid grid-cols-3 gap-3 mt-5">
-            {[["Expected goals", selected.expectedGoals == null ? "–" : selected.expectedGoals.toFixed(2)], ["Shot type", words(selected.shotType)], ["Situation", words(selected.situation)]].map(([label, value]) => <div key={label}><dt className="text-xs text-muted">{label}</dt><dd className="text-sm font-medium mt-1 tabular-nums">{value}</dd></div>)}
-          </dl>
-        </> : <p className="text-sm text-muted py-6">{visible.length ? "Select a shot on the pitch to explore the chance." : "No shots match these filters."}</p>}
-      </div>
+    </div>
+  );
+}
+
+function ShotTooltip({ id, shot, point }) {
+  const outcome = shotOutcome(shot);
+  const left = point.x / 105 * 100, top = point.y / 68 * 100;
+  // Sit above the dot; flip below near the top edge and hug the sides near the touchlines.
+  const x = left < 22 ? "-12%" : left > 78 ? "-88%" : "-50%";
+  const y = top < 38 ? "22px" : "calc(-100% - 22px)";
+  const stats = [
+    ["xG", isNum(shot.expectedGoals) ? shot.expectedGoals.toFixed(2) : "–"],
+    ...(isNum(shot.expectedGoalsOnTarget) && shot.isOnTarget && !shot.isBlocked ? [["xGOT", shot.expectedGoalsOnTarget.toFixed(2)]] : []),
+    ["Type", words(shot.shotType)],
+    ["Situation", words(shot.situation)],
+  ];
+  return (
+    <div id={id} role="tooltip" className="shot-tooltip" style={{ left: `${left}%`, top: `${top}%`, transform: `translate(${x}, ${y})` }}>
+      <p className="text-xs font-medium" style={{ color: OUTCOME_COLORS[outcome] }}>{outcome} · {shotMinute(shot)}</p>
+      <p className="text-sm font-semibold mt-0.5">{shot.playerName}</p>
+      <dl className="shot-tooltip-stats">
+        {stats.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
+      </dl>
     </div>
   );
 }

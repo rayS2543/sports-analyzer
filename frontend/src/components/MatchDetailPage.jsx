@@ -2,6 +2,7 @@ import { API_BASE } from "../apiBase";
 import React, { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import TeamBadge from "./TeamBadge";
+import KeeperView from "./KeeperView";
 import ShotMap, { FormationPitch } from "./MatchPitch";
 import NewsList from "./NewsList";
 import { decodeMatchId } from "../matchId";
@@ -185,6 +186,12 @@ export default function MatchDetailPage() {
         {detail?.available && <p className="text-xs text-faint">Match data and formations via FotMob.</p>}
       </Section>
       </div>
+
+      {detail?.available && detail.shots && (
+        <Section title="Goalkeeping" aside="Shots faced">
+          <KeeperView key={id} home={detail.home} away={detail.away} shots={detail.shots} />
+        </Section>
+      )}
 
       <Section title="Recent headlines">
         <NewsList query={`${home} vs ${away}`} />

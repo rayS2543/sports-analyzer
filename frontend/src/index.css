@@ -125,17 +125,25 @@
 .formation-player[aria-pressed="true"] .player-pitch-name { background: #f2c14e; color: #1a1406; }
 .formation-player:hover .player-shirt { filter: brightness(1.15); }
 .shot-pitch { aspect-ratio: 105 / 68; margin: 6px 10px; }
-.shot-filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.shot-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 10px; }
 .shot-filters label { font-size: 11px; color: rgb(var(--muted)); }
-.shot-filters select { display: block; width: 100%; margin-top: 6px; background: rgb(var(--surface)); color: rgb(var(--fg)); border: 1px solid rgb(var(--line)); border-radius: 6px; font-size: 12px; padding: 10px 7px; }
+.shot-filters select { display: block; width: 100%; margin-top: 6px; background: rgb(var(--surface)); color: rgb(var(--fg)); border: 1px solid rgb(var(--line)); border-radius: 6px; font-size: 12px; padding: 7px; }
 .shot-marker { position: absolute; width: max(24px, var(--shot-size)); height: max(24px, var(--shot-size)); transform: translate(-50%, -50%); display: grid; place-items: center; border-radius: 50%; z-index: 1; }
 .shot-marker > span { display: grid; place-items: center; width: var(--shot-size); height: var(--shot-size); border: 1.5px solid var(--team-color); border-radius: 50%; color: var(--team-color); background: #142f23; font-size: 12px; line-height: 1; }
 .shot-marker[data-goal="true"] > span { background: var(--team-color); color: #12241b; }
 .shot-marker[data-goal="true"] { z-index: 2; }
 .shot-marker[data-selected="true"], .shot-marker:hover, .shot-marker:focus-visible { z-index: 3; }
 .shot-marker[data-selected="true"] > span { outline: 2px solid #fff; outline-offset: 3px; }
-.shot-detail { padding: 20px; border: 1px solid rgb(var(--line)); border-radius: 8px; background: rgb(var(--surface)); min-height: 154px; }
-.shot-nav { border: 1px solid rgb(var(--line)); border-radius: 6px; width: 32px; height: 32px; color: rgb(var(--fg)); }
-.shot-nav:disabled { opacity: .3; cursor: not-allowed; }
+.shot-tooltip { position: absolute; z-index: 4; width: max-content; max-width: 220px; padding: 10px 12px; pointer-events: none; color: rgb(var(--fg)); background: rgb(var(--surface)); border: 1px solid rgb(var(--line)); border-radius: 8px; box-shadow: 0 8px 24px #0009; }
+.shot-tooltip-stats { display: grid; grid-template-columns: repeat(2, auto); gap: 6px 14px; margin-top: 8px; font-size: 11px; }
+.shot-tooltip-stats dt { color: rgb(var(--muted)); }
+.shot-tooltip-stats dd { font-weight: 550; font-variant-numeric: tabular-nums; }
+.shot-empty { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; font-size: 13px; color: #c9d6cf; }
+.goal-mouth { margin: 0 10px; }
+.goal-mouth svg { display: block; width: 100%; height: auto; overflow: visible; }
+.goal-mouth circle { cursor: pointer; }
+.goal-ground { stroke: #7b9d8b; stroke-width: 0.05; }
+.goal-frame { fill: none; stroke: #f3f7f4; stroke-width: 0.12; stroke-linejoin: round; }
+.goal-mouth figcaption { margin-top: 6px; text-align: center; font-size: 11px; color: rgb(var(--muted)); }
 @media (min-width: 640px) and (max-width: 1023px) { .formation-pitch { max-width: 440px; width: 100%; align-self: center; } }
 .striped-shirt-number { text-shadow: 0 0 2px #fff, 1px 0 #fff, -1px 0 #fff, 0 1px #fff, 0 -1px #fff; }

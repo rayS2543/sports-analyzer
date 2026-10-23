@@ -5,6 +5,7 @@ LEAGUES = {
     "SA": {"name": "Serie A", "country": "Italy"},
     "BL1": {"name": "Bundesliga", "country": "Germany"},
     "FL1": {"name": "Ligue 1", "country": "France"},
+    "CL": {"name": "Champions League", "country": "Europe"},
 }
 
 DEFAULT_LEAGUE = "PD"

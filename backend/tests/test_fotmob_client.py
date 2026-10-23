@@ -10,6 +10,8 @@ import fotmob_client
     ("SA", "FC Internazionale Milano", "ACF Fiorentina", "Inter", "Fiorentina"),
     ("BL1", "TSG 1899 Hoffenheim", "1. FSV Mainz 05", "Hoffenheim", "Mainz 05"),
     ("FL1", "Olympique de Marseille", "Stade Rennais FC 1901", "Marseille", "Rennes"),
+    ("CL", "PSV", "Sporting Clube de Portugal", "PSV Eindhoven", "Sporting CP"),
+    ("CL", "PAE AEK", "SK Slavia Praha", "AEK Athens", "Slavia Prague"),
 ])
 def test_fixture_matching_handles_provider_names(monkeypatch, league, home, away, provider_home, provider_away):
     fixture = {"id": 123, "pageUrl": "/match#123", "status": {"utcTime": "2026-09-20T14:00:00Z"},
@@ -18,6 +20,69 @@ def test_fixture_matching_handles_provider_names(monkeypatch, league, home, away
     assert fotmob_client.find_fixture(league, "2026-09-20", home, away) == {"id": 123, "page_url": "/match#123"}
     assert fotmob_client.find_fixture(league, "2026-09-21", home, away) is None
     assert fotmob_client.find_fixture(league, "2026-09-20", away, home) is None
+
+
+def test_champions_league_fixtures_reads_the_league_stage_only(monkeypatch):
+    payload = {
+        "leagues": [
+            {
+                "id": 42,
+                "name": "Champions League - League Stage",
+                "matches": [
+                    {
+                        "id": 1,
+                        "home": {"id": 10, "name": "Bayern München", "score": 2},
+                        "away": {"id": 11, "name": "Arsenal", "score": 2},
+                        "status": {"utcTime": "2026-10-21T19:00:00.000Z", "finished": True, "started": True},
+                    },
+                    {
+                        "id": 2,
+                        "home": {"id": 12, "name": "Tomorrow FC", "score": 0},
+                        "away": {"id": 13, "name": "Other", "score": 0},
+                        "status": {"utcTime": "2026-10-22T19:00:00.000Z", "started": False},
+                    },
+                ],
+            },
+            {
+                "id": 999,
+                "name": "UEFA Youth League",
+                "matches": [
+                    {
+                        "id": 3,
+                        "home": {"name": "Bayern München U19"},
+                        "away": {"name": "Arsenal U19"},
+                        "status": {"utcTime": "2026-10-21T14:00:00.000Z", "finished": True},
+                    }
+                ],
+            },
+        ]
+    }
+
+    class Response:
+        ok = True
+        status_code = 200
+
+        def json(self):
+            return payload
+
+    monkeypatch.setattr(fotmob_client.requests, "get", lambda *args, **kwargs: Response())
+    fixtures = fotmob_client.champions_league_fixtures("2026-10-21")
+
+    assert fixtures == [
+        {
+            "id": 1,
+            "league_code": "CL",
+            "league_name": "Champions League",
+            "home": "Bayern München",
+            "away": "Arsenal",
+            "home_crest": "https://images.fotmob.com/image_resources/logo/teamlogo/10.png",
+            "away_crest": "https://images.fotmob.com/image_resources/logo/teamlogo/11.png",
+            "home_score": 2,
+            "away_score": 2,
+            "status": "FINISHED",
+            "kickoff": "2026-10-21T19:00:00.000Z",
+        }
+    ]
 
 
 def test_accents_normalize_without_merging_different_clubs():

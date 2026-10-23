@@ -23,7 +23,8 @@ def _build_shots(shotmap):
         {key: shot.get(key) for key in (
             "id", "teamId", "playerId", "playerName", "x", "y", "min", "minAdded",
             "eventType", "isBlocked", "isOnTarget", "expectedGoals", "shotType",
-            "situation", "period", "isOwnGoal",
+            "situation", "period", "isOwnGoal", "blockedX", "blockedY",
+            "goalCrossedY", "goalCrossedZ", "expectedGoalsOnTarget", "keeperId",
         )}
         for shot in shotmap["shots"]
         if _coordinate(shot.get("x"), 105) and _coordinate(shot.get("y"), 68)

@@ -16,6 +16,7 @@ LEAGUE_ID_MAP = {
     "SA": 135,  # Serie A
     "BL1": 78,  # Bundesliga
     "FL1": 61,  # Ligue 1
+    "CL": 2,  # Champions League
 }
 
 
