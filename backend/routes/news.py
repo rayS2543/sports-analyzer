@@ -18,7 +18,8 @@ def get_team_news():
     teams = [t for t in request.args.get("teams", "").split(",") if t]
     if not teams:
         return jsonify({"items": [], "error": "teams parameter is required"}), 400
-    return jsonify({"items": news_client.for_teams(teams)})
+    items, sources = news_client.for_teams(teams)
+    return jsonify({"items": items, "sources": sources})
 
 
 @news_bp.route("/news")

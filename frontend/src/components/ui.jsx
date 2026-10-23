@@ -54,7 +54,7 @@ export function SiteHeader({ back = false }) {
               Elo
             </Link>
             <Link to="/feed" className="pressable inline-flex items-center gap-1.5 text-sm font-medium text-muted hover:text-fg">
-              <span aria-hidden="true">★</span> For You
+              <span aria-hidden="true">★</span> My Football
             </Link>
           </nav>
         )}
