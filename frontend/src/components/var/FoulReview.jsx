@@ -151,6 +151,27 @@ function Indicator({ ind }) {
   );
 }
 
+const LEAN_WORD = { red: "red", not_red: "not red" };
+
+/** The graded reading under an inconclusive verdict: explicitly not a decision, and its % is the geometry's own uncertainty. */
+function Lean({ lean, ground }) {
+  if (!lean || lean.reading === "no_lean") return null;
+  const pct = Math.round(lean.probability * 100);
+  return (
+    <div data-testid="lean" className="rounded-lg border border-line bg-canvas/40 px-3 py-2 flex flex-col gap-1">
+      <p className="text-sm text-fg">
+        Leans {LEAN_WORD[lean.reading]}, ~{pct}%<span className="text-muted"> — not a decision</span>
+        {ground && <span className="text-muted"> ({ground})</span>}
+      </p>
+      {lean.basis && <p className="text-xs text-muted">{lean.basis}.</p>}
+      {lean.settle?.length > 0 && <p className="text-xs text-faint">Would settle it: {lean.settle.join("; ")}.</p>}
+      <p className="text-xs text-faint">
+        The % is the measurements&apos; own uncertainty carried through, not a validated hit rate. Only a verdict at {RELY * 100}%+ confidence is a call.
+      </p>
+    </div>
+  );
+}
+
 function GroundCard({ ground, id }) {
   const style = VERDICT[ground.verdict] || VERDICT.inconclusive;
   const headingId = `${id}-${ground.ground}`;
@@ -168,6 +189,7 @@ function GroundCard({ ground, id }) {
         <p className={`text-2xl font-semibold tracking-tight ${style.text}`}>{style.label}</p>
         {ground.downgraded_to === "yellow" && <p className="text-sm text-accent">Downgraded to a caution (penalty area)</p>}
       </div>
+      <Lean lean={ground.lean} />
       {ground.reasons?.length > 0 && (
         <ul className="flex flex-col gap-1.5 text-sm text-muted">
           {ground.reasons.map((r) => (
@@ -358,6 +380,7 @@ function Incident({ inc, open, active, onSelect, combine }) {
       {open && (
         <div id={`${id}-body`} className="px-4 pb-4 flex flex-col gap-3">
           <p className="text-sm text-muted">{inc.sanction_note}</p>
+          <Lean lean={inc.lean} ground={inc.lean && inc.grounds.find((g) => g.ground === inc.lean.ground)?.label} />
           <div className="grid gap-3 grid-cols-[repeat(auto-fit,minmax(14rem,1fr))]">
             {inc.grounds.map((g) => (
               <GroundCard key={g.ground} ground={g} id={id} />

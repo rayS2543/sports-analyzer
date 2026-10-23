@@ -341,3 +341,15 @@ def test_team_votes_discount_crowded_crops_and_leave_ambiguous_kits_unlabelled()
     clear = [(0.6 + 0.1 * k, [lone, front], ["A", "A"], None) for k in range(2)]
     ids = [[1, 2, 3]] * 6 + [[1, 2]] * 2
     assert fouls.team_votes(crowded + clear, ids, _Kit) == {1: "A", 3: "B"}  # 2: 2.0 A against 1.5 B is not decisive
+
+
+def test_uncalibrated_overlap_never_reaches_the_reliance_bar():
+    assert fouls.uncalibrated_contact_conf(0.9, True) == fouls.UNCALIBRATED_MAX_CONF < 0.6
+    assert fouls.uncalibrated_contact_conf(0.3, True) == 0.3
+    assert fouls.uncalibrated_contact_conf(0.9, False) == 0.9  # apart in the image is apart
+
+
+def test_a_replay_with_unknown_playback_speed_has_no_metric_speed():
+    analysis = {"shots": [{"id": 0}, {"id": 1, "speed_unobserved": True}]}
+    assert not fouls._speed_unobserved(analysis, 0) and fouls._speed_unobserved(analysis, 1)
+    assert not fouls._speed_unobserved({}, 0)

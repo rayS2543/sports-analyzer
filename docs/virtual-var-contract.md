@@ -186,7 +186,8 @@ Backend default port is now 5001 (macOS AirPlay owns 5000); frontend API_BASE de
 - Backend: `backend/var_fouls.py` (pure law logic) + `backend/routes/var_fouls.py`:
   `POST /var/fouls {clip,start,end}` (starts/returns job) and `GET /var/fouls/<clip>?start&end` →
   `{"status", "incidents": [{"t", "players", "grounds": [{"ground": "serious_foul_play|violent_conduct|dogso",
-   "verdict": "red|not_red|inconclusive", "indicators": [...], "reasons": [...]}], "sanction": "red|yellow|none|inconclusive"}]}`
+   "verdict": "red|not_red|inconclusive", "indicators": [...], "reasons": [...], "lean": null | {...}}], "sanction": "red|yellow|none|inconclusive", "lean": null | {...}}]}`
+  `lean` (only on inconclusive grounds / incidents; additive): `{"reading": "red|not_red|no_lean", "probability": 0..1|null, "p_red": [lo, hi], "basis", "settle": [...], "decisive": false, "note"}`. The probability is the measurements' own uncertainty, not a validated hit rate, and a lean is never a decision.
   Penalty-area DOGSO with a genuine attempt to play the ball → yellow (Law 12 downgrade). Honest inconclusive.
 - Frontend: self-contained `frontend/src/components/var/FoulReview.jsx` (props: clip, start, end, time, onSeek), mounted in the viewer's "Foul / red card" tab next to the offside tool.
 
