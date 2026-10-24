@@ -319,11 +319,58 @@ def frame_at(frames, t, kick_ball=None):
     return dict(scene, ball=ball or None)
 
 
-def _window_direction(frames, defending, length):
-    """Attack direction from the defending goalkeeper seen on any calibrated sample of the shot, or None."""
+DIRECTION_MIN_PLAYERS = 3  # outfielders a team needs in a frame to say where it stands relative to its opponents
+DIRECTION_MIN_FRAMES = 10  # frames that must vote
+DIRECTION_AGREE = 0.7      # share of voting frames that must agree
+DIRECTION_GAP_M = 3.0      # mean position of the opponents versus the team's own, to count as a vote
+
+
+def _keeper_end(frames, team, length):
     xs = sorted(p["x"] for f in frames if (f.get("calibration") or {}).get("ok") for p in f.get("players") or []
-                if p.get("role") == "goalkeeper" and p.get("team") == defending and p.get("x") is not None)
-    return None if not xs else ("right" if xs[len(xs) // 2] > length / 2 else "left")
+                if p.get("role") == "goalkeeper" and p.get("team") == team and p.get("x") is not None)
+    return None if len(xs) < 3 else ("right" if xs[len(xs) // 2] > length / 2 else "left")
+
+
+def _positions_direction(frames, team):
+    """The end `team` seems to attack, from where its opponents stand relative to it, or None: opponents between a team and
+    the goal it attacks is the usual picture, but in transitions it flips, so it is only ever a cross-check."""
+    votes = []
+    for f in frames:
+        if not (f.get("calibration") or {}).get("ok"):
+            continue
+        own = [p["x"] for p in f.get("players") or [] if p.get("role") == "player" and p.get("team") == team and p.get("x") is not None]
+        opp = [p["x"] for p in f.get("players") or [] if p.get("role") == "player" and p.get("team") not in (None, team) and p.get("x") is not None]
+        if len(own) >= DIRECTION_MIN_PLAYERS and len(opp) >= DIRECTION_MIN_PLAYERS:
+            gap = sum(opp) / len(opp) - sum(own) / len(own)
+            if abs(gap) > DIRECTION_GAP_M:
+                votes.append("right" if gap > 0 else "left")
+    if len(votes) < DIRECTION_MIN_FRAMES:
+        return None
+    top = max(("left", "right"), key=votes.count)
+    return top if votes.count(top) >= DIRECTION_AGREE * len(votes) else None
+
+
+def window_direction(frames, team, length):
+    """(direction, why) for the end `team` attacks, or (None, why not). A goalkeeper seen in the shot says which end each team
+    defends, and the teams' positions must agree with it: either alone has been wrong on real clips, and a guess here flips
+    every margin in the review."""
+    opponent = "B" if team == "A" else "A"
+    claims = set()
+    if (end := _keeper_end(frames, opponent, length)):
+        claims.add(end)  # the team attacks the end its opponent's keeper defends
+    if (end := _keeper_end(frames, team, length)):
+        claims.add("left" if end == "right" else "right")
+    if not claims:
+        return None, "no goalkeeper is seen in this shot"
+    if len(claims) > 1:
+        return None, "the goalkeepers seen contradict each other"
+    direction = claims.pop()
+    positions = _positions_direction(frames, team)
+    if positions is None:
+        return None, "the teams' positions in the shot do not confirm which end the goalkeeper defends"
+    if positions != direction:
+        return None, "the goalkeeper and the teams' positions point to different ends"
+    return direction, "goalkeeper seen in this shot, confirmed by the teams' positions"
 
 
 def feasibility(frame, result, team, shot_frames=None, moment=None, direction_source=None):
@@ -348,6 +395,8 @@ def feasibility(frame, result, team, shot_frames=None, moment=None, direction_so
             blockers.append("ball not located")
         elif _ball_error(ball) is None:
             blockers.append("ball height unknown")
+    if result.get("restart"):
+        blockers.append(f"the pass restarts play with a {result['restart']}: offside does not apply")
     if result.get("attack_direction") is None:
         blockers.append("attack direction unknown")
     if keeper == "assumed" and defenders:
@@ -367,6 +416,29 @@ def feasibility(frame, result, team, shot_frames=None, moment=None, direction_so
             "goalkeeper": keeper, "attack_direction_source": direction_source}
 
 
+RESTART_WINDOW_S = 0.8  # the ball must have sat still this long before the kick ...
+RESTART_STILL_M = 1.0   # ... within this distance
+CORNER_M = 2.5          # near a corner flag: a corner kick
+GOAL_AREA_M = (5.5, 18.32)  # depth and width of the goal area: a goal kick is taken from inside it
+
+
+def restart_kind(frames, t, length=105.0, width=68.0):
+    """'corner kick' or 'goal kick' when the ball sat still on the grass where one is taken just before t, else None.
+    Offside does not apply to either. A keeper picking the ball up and kicking it from the same spot looks the
+    same (the ball is still), so the goal-kick reading is worded as a possibility."""
+    seen = [(f["ball"]["x"], f["ball"]["y"]) for f in frames if t - RESTART_WINDOW_S <= f["t"] <= t + 1e-6
+            and (f.get("calibration") or {}).get("ok") and (f.get("ball") or {}).get("x") is not None and f["ball"].get("airborne") is not True]
+    if len(seen) < 3:
+        return None
+    x, y = sorted(p[0] for p in seen)[len(seen) // 2], sorted(p[1] for p in seen)[len(seen) // 2]
+    if max(math.hypot(px - x, py - y) for px, py in seen) > RESTART_STILL_M:
+        return None
+    if any(math.hypot(x - cx, y - cy) <= CORNER_M for cx in (0.0, length) for cy in (0.0, width)):
+        return "corner kick"
+    depth, wide = GOAL_AREA_M
+    return "goal kick" if (x <= depth or x >= length - depth) and abs(y - width / 2) <= wide / 2 else None
+
+
 def review_event(frames, event, length=105.0, sampled_fps=None, view=None):
     """Offside review of one detected pass: (key result, candidates). The moment is the estimated kick, the scene
     is interpolated to it, and the result carries a feasibility record."""
@@ -375,11 +447,13 @@ def review_event(frames, event, length=105.0, sampled_fps=None, view=None):
     passer, team = event.get("passer_track_id"), event.get("team")
     moment = kick_moment(calibrated, passer, event["t"], sampled_fps)
     frame = frame_at(shot, moment["t"], moment.get("ball"))
-    direction = _window_direction(calibrated, "B" if team == "A" else "A", length) if team in ("A", "B") else None
+    direction, source = window_direction(calibrated, team, length) if team in ("A", "B") else (None, "the passer's team is unknown")
+    if direction is None:  # never guess: a wrong end flips every margin
+        key = _result("inconclusive", [f"The attack direction is not established ({source}), so offside cannot be read from this pass."])
+        key.update(frame_t=frame["t"], moment=moment)
+        key["feasibility"] = feasibility(frame, key, team, shot, moment, source)
+        return key, []
     key, candidates = review(frame, passer, team, length, sampled_fps, moment["sigma_s"], direction, view)
-    source = ("defending goalkeeper seen in this shot" if direction else
-              "defending goalkeeper in this frame" if any(p.get("role") == "goalkeeper" and p.get("team") not in (None, team) for p in frame.get("players") or [])
-              else "mean position of the defenders (heuristic)")
     key["reasons"].insert(0, f"Moment the ball was played: {moment['t']:.2f} s ({moment['method']}; +/- {moment['sigma_s']:.2f} s); "
                              f"the detector's sample was {event['t']:.2f} s.")
     key["frame_t"], key["moment"] = frame["t"], moment
@@ -409,5 +483,15 @@ def review_event(frames, event, length=105.0, sampled_fps=None, view=None):
     if receiver is not None and event.get("receiver_team") == team:  # the player the pass was played to
         r = checked(assess(frame, receiver, team, direction, length, sampled_fps, moment["sigma_s"], view))
         key["receiver"] = {k: r.get(k) for k in ("verdict", "margin_m", "uncertainty_m", "attacker_track_id", "timing_check")}
+    restart = restart_kind(calibrated, moment["t"], length)
+    if restart:  # offside does not apply: say so instead of judging the players
+        key["restart"] = restart
+        key["verdict"] = "inconclusive"
+        key["reasons"].insert(0, f"The ball sat still before this pass where a {restart} is taken, and offside does not apply to a {restart}"
+                                 + (" (a goalkeeper restarting play from his hands looks the same here)." if restart == "goal kick" else "."))
+        for c in candidates:
+            c["verdict"] = "inconclusive"
+        if key.get("receiver"):
+            key["receiver"]["verdict"] = "inconclusive"
     key["feasibility"] = feasibility(frame, key, team, shot, moment, source)
     return key, candidates

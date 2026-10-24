@@ -172,6 +172,18 @@ Done in this slice: the uncalibrated close-up contact confidence cap (0.55, belo
 apart in depth) is in cv/var_cv/fouls.py (added on feature/foul-graded-verdict, with a test); the 10-incident spot-check sheet is
 eval/spot_check_10.jpg, and the user judged those spot checks not worth marking because they lack depth.
 
+## For the revival chat: offside logic, attack direction, sweep (2026-10-23, branch `feature/var-upload-clips`)
+
+Read `backend/var_offside.py` from THIS branch, not `feature/virtual-var`: the newest rules are only here.
+
+- **Attack direction is never guessed.** `window_direction(frames, team, length)` accepts a direction only when a goalkeeper was seen in the shot AND the teams' positions agree (opponents' mean x vs the team's own, >= 70% of >= 10 frames, gap > 3 m); otherwise `review_event` returns `inconclusive` with "attack direction is not established (<why>)" and `candidates == []`. Reason: the old mean-of-defenders guess flipped margins (offside 17 m / onside 18 m 0.2 s apart). Convention: `attack_direction == "right"` means toward +x in the 0..105 m frame; in GSR terms the `left` team defends -x and attacks +x (`left -> "right"`), shift x by +52.5.
+- **Real-clip numbers (La Liga ESPN goal clips, 4 clips, 18 passes):** 2 read, 13 "no goalkeeper in the shot", 3 "positions do not confirm". The keeper is usually off screen during a live build-up. Direction cues measured and rejected on 10 real windows: team-position-only (wrong in 4 of 11 vs keeper evidence) and "ball ends at a goal + last passer's team" (agreed in 2 of 8). Keeper evidence itself is imperfect: the detector's goalkeeper class gives several fragment tracks per window and sometimes keepers of both teams at one end.
+- **Open question the GSR ground truth can answer:** how often the keeper+positions rule is right and how often it abstains over 115 clips; then whether a small learned direction model (player+ball positions over a few seconds) beats it.
+- **Restarts:** `restart_kind` flags a pass from a still ball at a corner (<= 2.5 m from a flag) or in the goal area as "offside does not apply" (goal-kick reading is worded as a possibility: a keeper's own distribution looks the same). Tested on constructed cases only; it did not fire on any real clip.
+- **Keeper by kit:** `teams.kit_outliers` finds one clearly-odd, long-lived (>= 12 crops) kit per team; by the goal it becomes the keeper (fixed Atletico's black-kit keeper counted as a Levante attacker). Short fragments and several odd tracks are ignored.
+- **Sweep + Checks page:** `python -m sweep --league PD --days 14 --limit N` (or the "Check recent goals" button at `/var/checks`) finds ESPN goal clips, analyses each live build-up (up to two 10 s windows), reviews every pass and saves `var_data/sweeps/<clip>.json`; flags: pitch not fitted (< 50% calibrated frames), an offside position > 3 m. `/var/discover`, `/var/clip` (ESPN video by link or id), `/var/upload` + `/var/uploads` (own MP4, also `var_data/inbox`) are the clip-sourcing endpoints.
+- **Wide-shot overlays checked by eye (3 passes):** Rayo-Getafe onside 2.7 m and Alaves-Celta offside position 4 m looked right; Levante was wrong until the keeper fix (it is a free kick by the box, not a corner).
+
 ## Open work — priority order
 
 1. ~~Live identity through tangles~~ done, see above. Remaining idea: a world-frame (pitch) velocity for calibrated shots if camera pans make image-space velocity unreliable.

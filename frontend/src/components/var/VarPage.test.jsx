@@ -28,6 +28,7 @@ const API = API_BASE;
 const SOURCE = "https://espnmedia-cdn.akamaized.net/espn/media/16x9/wsc/2025/0921/clip.mp4";
 let analysed;
 let priorWindows;
+let uploadedClips;
 let reviewResponse;
 const KEY = {
   verdict: "offside", margin_m: 0.35, uncertainty_m: 0.31, offside_line_x: 81.29, second_last_defender_track_id: 16,
@@ -37,6 +38,7 @@ const KEY = {
 beforeEach(() => {
   analysed = false;
   priorWindows = [];
+  uploadedClips = [];
   reviewResponse = {
     reviews: [
       {
@@ -67,6 +69,9 @@ beforeEach(() => {
           ],
         },
       });
+    if (url === `${API}/var/uploads`) return Promise.resolve({ data: { clips: uploadedClips } });
+    if (url === `${API}/var/windows/90000000001`) return Promise.resolve({ data: { windows: [] } });
+    if (url === `${API}/var/analysis/90000000001`) return Promise.resolve({ data: { status: "none", progress: null, error: null, result: null } });
     if (url === `${API}/var/windows/46338651`) return Promise.resolve({ data: { windows: priorWindows } });
     if (url === `${API}/var/analysis/46338651`)
       return Promise.resolve({ data: analysed ? { status: "done", result: sample } : { status: "none", progress: null, error: null, result: null } });
@@ -107,14 +112,19 @@ describe("VarPage", () => {
       url === `${API}/var/discover`
         ? Promise.resolve({ data: { reviews: [
             { event: "401882894", match: "Real Madrid at Real Betis", date: "2026-09-04", minute: "87'", player: "Carlos Espí", outcome: "goal ruled out", offside: true, clip },
-            { event: "401882895", match: "Getafe at Sevilla", date: "2026-09-03", minute: "12'", player: "Mayoral", outcome: "goal ruled out", offside: true, clip: null },
+            { event: "401882895", match: "Getafe at Sevilla", date: "2026-09-03", minute: "12'", player: "Mayoral", outcome: "goal ruled out", offside: true, clip: null, highlights: { ...clip, id: "77", title: "Getafe vs. Sevilla - Game Highlights" } },
+            { event: "401882896", match: "Osasuna at Atletico Madrid", date: "2026-09-02", minute: "9'", player: "Griezmann", outcome: "goal ruled out", offside: true, clip: null, highlights: null },
           ] } })
         : base(url, config)
     );
     renderAt("/var?date=2026-09-10");
     await user.click(await screen.findByRole("button", { name: "Find VAR offside reviews" }));
     expect(axios.get).toHaveBeenCalledWith(`${API}/var/discover`, { params: { league: "PD", from: "2026-08-28", to: "2026-09-10", kind: "offside" } });
-    expect(await screen.findByText("no ESPN clip")).toBeInTheDocument();
+    // No clip names the player: offer the match's short highlights, and for a match with neither, open the match.
+    expect(await screen.findByRole("button", { name: /Open the match highlights for Getafe at Sevilla 12'/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Open the match Osasuna at Atletico Madrid/ })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Open the match Osasuna at Atletico Madrid/ }));
+    expect(axios.get).toHaveBeenCalledWith(`${API}/var/clips`, { params: { league: "PD", event: "401882896" } });
     await user.click(screen.getByRole("button", { name: /Open the clip for Real Madrid at Real Betis 87'/ }));
     expect(axios.get).toHaveBeenCalledWith(`${API}/var/clips`, { params: { league: "PD", event: "401882894" } });
   });
@@ -233,5 +243,99 @@ describe("VarPage", () => {
     renderAt(WINDOW_LINK);
     await user.click(await screen.findByRole("button", { name: "Analyze these seconds" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Another clip is being analysed");
+  });
+});
+
+describe("VarPage goals to check", () => {
+  it("lists goal clips found by ESPN headline and opens one", { timeout: 20000 }, async () => {
+    const user = userEvent.setup();
+    const base = axios.get.getMockImplementation();
+    axios.get.mockImplementation((url, config) =>
+      url === `${API}/var/discover`
+        ? Promise.resolve({ data: { clips: [{ id: "55", title: "Pablo Durán gets on the scoresheet for Celta Vigo", duration_seconds: 61, source_url: SOURCE, page_url: null, event: "401001", match: "Real Sociedad at Celta Vigo", date: "2026-10-19", kind: "goal" }] } })
+        : base(url, config)
+    );
+    renderAt("/var?date=2026-10-19");
+    await user.click(await screen.findByRole("button", { name: "Find goals to check" }));
+    expect(axios.get).toHaveBeenCalledWith(`${API}/var/discover`, { params: { league: "PD", from: "2026-10-06", to: "2026-10-19", kind: "goal" } });
+    await user.click(await screen.findByRole("button", { name: /Open the goal clip Pablo Durán/ }));
+    expect(axios.get).toHaveBeenCalledWith(`${API}/var/clips`, { params: { league: "PD", event: "401001" } });
+  });
+});
+
+describe("VarPage uploads", () => {
+  it("uploads an MP4, previews it from this computer and analyses it without a league or match", { timeout: 20000 }, async () => {
+    const user = userEvent.setup();
+    const clip = { id: "90000000001", title: "My corner", filename: "my corner.mp4", bytes: 88, uploaded_at: 1 };
+    axios.post.mockImplementation((url) =>
+      url === `${API}/var/upload`
+        ? Promise.resolve({ status: 201, data: { clip } })
+        : Promise.resolve({ status: 202, data: { clip: clip.id, status: "queued", window: "0.0-2.0" } })
+    );
+    const { container } = renderAt("/var");
+    const file = new File(["x"], "my corner.mp4", { type: "video/mp4" });
+    await user.upload(await screen.findByLabelText("Upload your own clip"), file);
+    expect(axios.post).toHaveBeenCalledWith(`${API}/var/upload`, expect.any(FormData));
+
+    expect(await screen.findByRole("heading", { name: "Find the moment" })).toBeInTheDocument();
+    expect(container.querySelector("video")).toHaveAttribute("src", `${API}/var/video/${clip.id}`);
+    await user.click(screen.getByRole("button", { name: "Analyze these seconds" }));
+    expect(axios.post).toHaveBeenCalledWith(`${API}/var/analyze`, { clip: clip.id, start: 0, end: 2 });
+  });
+
+  it("lists clips uploaded earlier and reopens one", { timeout: 20000 }, async () => {
+    const user = userEvent.setup();
+    uploadedClips = [{ id: "90000000001", title: "My corner", filename: "a.mp4", bytes: 88, uploaded_at: 1 }];
+    const { container } = renderAt("/var");
+    await user.click(await screen.findByRole("button", { name: "Open your clip My corner" }));
+    expect(await screen.findByRole("heading", { name: "Find the moment" })).toBeInTheDocument();
+    expect(container.querySelector("video")).toHaveAttribute("src", `${API}/var/video/90000000001`);
+  });
+});
+
+describe("VarPage clip by link", () => {
+  it("gets an ESPN clip from a pasted link and analyses it without a match", { timeout: 20000 }, async () => {
+    const user = userEvent.setup();
+    const clip = { id: "44656413", title: "Mbappé is sent off", duration_seconds: 65, source_url: SOURCE, page_url: null };
+    const base = axios.get.getMockImplementation();
+    axios.get.mockImplementation((url, config) => {
+      if (url === `${API}/var/clip`) return Promise.resolve({ data: { clip } });
+      if (url === `${API}/var/windows/44656413`) return Promise.resolve({ data: { windows: [] } });
+      if (url === `${API}/var/analysis/44656413`) return Promise.resolve({ data: { status: "none", progress: null, error: null, result: null } });
+      return base(url, config);
+    });
+    axios.post.mockImplementation(() => Promise.resolve({ status: 202, data: { clip: clip.id, status: "queued", window: "0.0-2.0" } }));
+    const { container } = renderAt("/var");
+    await user.type(await screen.findByLabelText("ESPN video link or ID"), "https://www.espn.com/watch/syndicatedplayer/_/id/44656413");
+    await user.click(screen.getByRole("button", { name: "Get clip" }));
+    expect(axios.get).toHaveBeenCalledWith(`${API}/var/clip`, { params: { link: "https://www.espn.com/watch/syndicatedplayer/_/id/44656413" } });
+    expect(await screen.findByRole("heading", { name: "Find the moment" })).toBeInTheDocument();
+    expect(container.querySelector("video")).toHaveAttribute("src", SOURCE);
+    await user.click(screen.getByRole("button", { name: "Analyze these seconds" }));
+    expect(axios.post).toHaveBeenCalledWith(`${API}/var/analyze`, { clip: "44656413", start: 0, end: 2 });
+  });
+
+  it("says so when ESPN has no such video", { timeout: 20000 }, async () => {
+    const user = userEvent.setup();
+    const base = axios.get.getMockImplementation();
+    axios.get.mockImplementation((url, config) =>
+      url === `${API}/var/clip` ? Promise.reject({ response: { data: { error: "ESPN has no downloadable video with that ID" } } }) : base(url, config)
+    );
+    renderAt("/var");
+    await user.type(await screen.findByLabelText("ESPN video link or ID"), "12345678");
+    await user.click(screen.getByRole("button", { name: "Get clip" }));
+    expect(await screen.findByText("ESPN has no downloadable video with that ID")).toBeInTheDocument();
+  });
+});
+
+describe("VarPage drag and drop", () => {
+  it("uploads an MP4 dropped on the picker", { timeout: 20000 }, async () => {
+    const clip = { id: "90000000001", title: "Dropped", filename: "d.mp4", bytes: 1, uploaded_at: 1 };
+    axios.post.mockImplementation(() => Promise.resolve({ status: 201, data: { clip } }));
+    renderAt("/var");
+    const zone = await screen.findByTestId("drop-zone");
+    fireEvent.drop(zone, { dataTransfer: { files: [new File(["x"], "d.mp4", { type: "video/mp4" })] } });
+    expect(await screen.findByRole("heading", { name: "Find the moment" })).toBeInTheDocument();
+    expect(axios.post).toHaveBeenCalledWith(`${API}/var/upload`, expect.any(FormData));
   });
 });

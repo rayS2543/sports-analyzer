@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from var_offside import BODY_MARGIN_M, FALLBACK_CLOSING_MPS, assess, feasibility, frame_at, kick_moment, review, review_event
+from var_offside import BODY_MARGIN_M, FALLBACK_CLOSING_MPS, assess, feasibility, frame_at, kick_moment, restart_kind, review, review_event, window_direction
 
 
 def player(track, team, x, role="player", y=30.0):
@@ -236,7 +236,11 @@ def pass_frames(missing_ball_at=(1.1,)):
         players = [{"track_id": 1, "team": "A", "role": "player", "x": 50.0, "y": 30.0, "vx": 0.0},
                    {"track_id": 7, "team": "A", "role": "player", "x": 81.3 + 8.0 * (t - KICK), "y": 20.0, "vx": 8.0},
                    {"track_id": 3, "team": "B", "role": "player", "x": 80.0, "y": 25.0, "vx": 0.0},
-                   {"track_id": 4, "team": "B", "role": "player", "x": 70.0, "y": 25.0, "vx": 0.0}]
+                   {"track_id": 4, "team": "B", "role": "player", "x": 70.0, "y": 25.0, "vx": 0.0},
+                   # enough of each side, and a keeper, for the attack direction to be established (see window_direction)
+                   {"track_id": 2, "team": "A", "role": "player", "x": 55.0, "y": 40.0, "vx": 0.0},
+                   {"track_id": 5, "team": "B", "role": "player", "x": 75.0, "y": 40.0, "vx": 0.0},
+                   {"track_id": 9, "team": "B", "role": "goalkeeper", "x": 104.0, "y": 34.0, "vx": 0.0}]
         ball = None if t in missing_ball_at else {"x": ball_x, "y": 30.0, "z": 0.0, "airborne": False, "height_model": "rolling", "position_uncertainty_m": 0.2}
         frames.append({"t": t, "shot": 0, "calibration": {"ok": True, "reprojection_error_m": 0.4, "source": "detected"}, "ball": ball, "players": players})
     return frames
@@ -288,8 +292,8 @@ def test_feasibility_reports_what_the_review_had():
     key, _ = review_event(pass_frames(), EVENT, 105.0, FPS)
     f = key["feasibility"]
     assert f["available"] and f["blockers"] == [] and f["calibrated"]
-    assert f["goalkeeper"] == "assumed" and any("goalkeeper" in w for w in f["warnings"])
-    assert f["tracked_players"] == 4 and f["tracked_opponents"] == 2 and f["calibrated_frames"] == [20, 20]
+    assert f["goalkeeper"] == "located" and not any("goalkeeper" in w for w in f["warnings"])
+    assert f["tracked_players"] == 7 and f["tracked_opponents"] == 4 and f["calibrated_frames"] == [20, 20]
     assert f["ball_contact_moment"]["found"] is True
 
 
@@ -305,13 +309,9 @@ def test_feasibility_names_each_blocker():
     assert f["calibrated_frames"] == [0, 20] and f["ball_contact_moment"]["found"] is False
 
 
-def test_feasibility_keeper_located():
-    frames = pass_frames()
-    for f in frames:
-        f["players"].append({"track_id": 1, "team": "B", "role": "goalkeeper", "x": 100.0, "y": 30.0})
-        f["players"][-1]["track_id"] = 99
-    key, _ = review_event(frames, EVENT, 105.0, FPS)
-    assert key["feasibility"]["goalkeeper"] == "located" and key["feasibility"]["attack_direction_source"] == "defending goalkeeper seen in this shot"
+def test_feasibility_says_where_the_attack_direction_came_from():
+    key, _ = review_event(pass_frames(), EVENT, 105.0, FPS)
+    assert key["feasibility"]["attack_direction_source"] == "goalkeeper seen in this shot, confirmed by the teams' positions"
 
 
 # --- opponents outside the picture ------------------------------------------------------------------------
@@ -341,8 +341,78 @@ def test_call_reversed_by_the_next_sample_is_not_decisive():
     for f in frames:
         if f["t"] >= 1.1:  # a deep opponent seen at the kick and lost on the next sample moves the line 15 m
             continue
-        f["players"].append({"track_id": 5, "team": "B", "role": "player", "x": 96.0, "y": 25.0, "vx": 0.0})
+        f["players"].append({"track_id": 6, "team": "B", "role": "player", "x": 96.0, "y": 25.0, "vx": 0.0})
     key, _ = review_event(frames, EVENT, 105.0, FPS)
     assert key["verdict"] == "inconclusive" and {n["verdict"] for n in key["timing_check"]} >= {"offside"}
     assert any("reverses" in r for r in key["reasons"])
     assert review_event(pass_frames(), EVENT, 105.0, FPS)[0]["verdict"] == "offside"  # stable scene stays decisive
+
+
+# --- restarts: offside does not apply ------------------------------------------------------------------
+
+def restart_frames(spot_x, spot_y, attacker_x):
+    """pass_frames, but the passer and the still ball are at (spot_x, spot_y), the ball leaving along the pitch."""
+    frames = pass_frames(missing_ball_at=())
+    sign = -1.0 if spot_x > 52.5 else 1.0
+    for f in frames:
+        t = f["t"]
+        f["ball"]["x"], f["ball"]["y"] = spot_x + sign * max(0.0, t - KICK) * 20.0, spot_y
+        f["players"][0].update(x=spot_x + sign * 0.3, y=spot_y)
+        f["players"][1].update(x=attacker_x, vx=0.0)
+    return frames
+
+
+@pytest.mark.parametrize("spot,kind", [((104.7, 0.5), "corner kick"), ((0.4, 67.5), "corner kick"), ((3.0, 34.0), "goal kick")])
+def test_a_pass_from_a_dead_ball_restart_is_not_judged_for_offside(spot, kind):
+    attacker = 25.0 if spot[0] > 52.5 else 95.0  # well beyond the line: open play would be a clear offside
+    key, candidates = review_event(restart_frames(*spot, attacker), EVENT, 105.0, FPS)
+    assert key["restart"] == kind and key["verdict"] == "inconclusive"
+    assert all(c["verdict"] == "inconclusive" for c in candidates)
+    assert not key["feasibility"]["available"] and any("offside does not apply" in b for b in key["feasibility"]["blockers"])
+
+
+def test_a_pass_in_open_play_is_not_taken_for_a_restart():
+    key, _ = review_event(pass_frames(), EVENT, 105.0, FPS)
+    assert "restart" not in key and key["verdict"] == "offside"
+    assert restart_kind(pass_frames(), 1.09) is None  # a ball sitting still in midfield is a free kick or a carry: offside applies
+
+
+def test_a_ball_that_moves_through_the_corner_area_is_not_a_corner_kick():
+    frames = restart_frames(104.7, 0.5, 25.0)
+    for f in frames:
+        f["ball"]["x"] = 100.0 + f["t"] * 3.0  # dribbled past the corner flag, not placed
+    assert restart_kind(frames, 1.09) is None
+
+
+# --- the attack direction is never guessed ---------------------------------------------------------------
+
+def test_a_goalkeeper_and_the_teams_positions_establish_the_direction_for_each_team():
+    frames = pass_frames()
+    assert window_direction(frames, "A", 105.0)[0] == "right" and window_direction(frames, "B", 105.0)[0] == "left"
+
+
+def test_without_a_goalkeeper_the_pass_is_not_read_at_all():
+    frames = pass_frames()
+    for f in frames:
+        f["players"] = [p for p in f["players"] if p["role"] != "goalkeeper"]
+    key, candidates = review_event(frames, EVENT, 105.0, FPS)
+    assert key["verdict"] == "inconclusive" and key["attack_direction"] is None and candidates == []
+    assert any("attack direction is not established (no goalkeeper is seen" in r for r in key["reasons"])
+    assert not key["feasibility"]["available"] and "attack direction unknown" in key["feasibility"]["blockers"]
+
+
+def test_keepers_that_contradict_each_other_or_the_positions_leave_the_direction_open():
+    both_right = pass_frames()
+    for f in both_right:
+        f["players"].append({"track_id": 8, "team": "A", "role": "goalkeeper", "x": 103.0, "y": 34.0, "vx": 0.0})  # both teams' keepers at one end
+    assert window_direction(both_right, "A", 105.0)[0] is None and "contradict" in window_direction(both_right, "A", 105.0)[1]
+    wrong_end = pass_frames()
+    for f in wrong_end:
+        f["players"][-1]["x"] = 1.0  # a 'keeper' at the other end from where the team stands says A attacks left
+    direction, why = window_direction(wrong_end, "A", 105.0)
+    assert direction is None and "different ends" in why
+
+
+def test_a_brief_or_unsettled_shot_does_not_confirm_the_direction():
+    frames = pass_frames()[:5]  # too few frames for the positions to vote
+    assert window_direction(frames, "A", 105.0)[0] is None

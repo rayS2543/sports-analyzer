@@ -11,7 +11,7 @@ from pathlib import Path
 import requests
 from flask import Blueprint, jsonify, request, send_file
 
-from routes.var_clips import ESPN_LEAGUES, _get, clip_list
+from routes.var_clips import ESPN_LEAGUES, _get, clip_list, espn_clip
 from var_offside import assess as assess_offside, feasibility as offside_feasibility, review_event as review_offside_event
 
 var_analysis_bp = Blueprint("var_analysis", __name__)
@@ -24,6 +24,7 @@ STALE_SECONDS = 600
 # running two), busy -> 409; add a queue if people analyse in parallel.
 _lock = threading.Lock()  # guards _job and _crossview here and var_fouls._job
 _job = None  # (clip_id, window_key, Popen): window analysis
+_sweep = None  # ("sweep", description, Popen): the batch of recent goal clips (backend/sweep.py)
 _crossview = None  # (clip_id, window_key, _CrossviewJob): cross-view calibration, then the replay's foul re-run
 OFFICIAL_TYPES = {"offside": "offside", "red-card": "red_card", "yellow-card": "yellow_card", "own-goal": "goal"}
 
@@ -57,7 +58,7 @@ def _running():
     """Why a new heavy CV job has to wait (one runs at a time, whatever its kind), or None. Call with _lock held."""
     from routes import var_fouls  # deferred: var_fouls imports this module
     for job, doing in ((_job, "being analysed"), (var_fouls._job, "having its challenges reviewed"),
-                       (_crossview, "being calibrated from the live camera")):
+                       (_crossview, "being calibrated from the live camera"), (_sweep, "being swept for recent goals")):
         if job and job[2].poll() is None:
             return f"Clip {job[0]} window {job[1]} is {doing}; try again when it finishes"
     return None
@@ -92,7 +93,10 @@ def analyze():
     body = request.get_json(silent=True) or {}
     league, event_id, clip_id = body.get("league"), body.get("event"), body.get("clip")
     key = _window(body.get("start"), body.get("end"))
-    if league not in ESPN_LEAGUES or not all(isinstance(v, str) and ID.fullmatch(v) for v in (event_id, clip_id)):
+    from routes.var_uploads import UPLOAD_ID, upload_meta  # deferred: var_uploads imports this module
+    uploaded = isinstance(clip_id, str) and upload_meta(clip_id) is not None  # a clip the user uploaded: no ESPN league, event or URL
+    standalone = not uploaded and not league and not event_id and isinstance(clip_id, str) and ID.fullmatch(clip_id) and not UPLOAD_ID.fullmatch(clip_id)  # an ESPN video picked by link: no match
+    if not uploaded and not standalone and (league not in ESPN_LEAGUES or not all(isinstance(v, str) and ID.fullmatch(v) for v in (event_id, clip_id))):
         return jsonify(error="A supported league and numeric ESPN event and clip IDs are required"), 400
     if not key:
         return jsonify(error=f"start and end seconds are required, 0 <= start < end, at most {MAX_WINDOW_SECONDS} s apart"), 400
@@ -106,14 +110,17 @@ def analyze():
         python = Path(os.environ.get("VAR_CV_PYTHON") or ROOT / "cv/.venv/bin/python")
         if not python.exists():
             return jsonify(error=f"CV environment not found at {python}. Run cv/setup.sh or set VAR_CV_PYTHON."), 503
-        try:
-            clip = next((c for c in clip_list(league, event_id) if c["id"] == clip_id), None)
-        except (requests.RequestException, ValueError, TypeError, KeyError, AttributeError):
-            return jsonify(error="Could not load ESPN clips"), 502
-        if not clip:
-            return jsonify(error="Clip is not listed for this ESPN event"), 404
-        if not clip["source_url"]:
-            return jsonify(error="ESPN lists no downloadable source for this clip"), 422
+        source = ["--local"]
+        if not uploaded:
+            try:
+                clip = espn_clip(clip_id) if standalone else next((c for c in clip_list(league, event_id) if c["id"] == clip_id), None)
+            except (requests.RequestException, ValueError, TypeError, KeyError, AttributeError):
+                return jsonify(error="Could not load ESPN clips"), 502
+            if not clip:
+                return jsonify(error="ESPN has no video with that ID" if standalone else "Clip is not listed for this ESPN event"), 404
+            if not clip["source_url"]:
+                return jsonify(error="ESPN lists no downloadable source for this clip"), 422
+            source = ["--source-url", clip["source_url"]]
         out = _out(clip_id, key)
         out.mkdir(parents=True, exist_ok=True)
         for name in ("error.json", "progress.json"):
@@ -121,7 +128,7 @@ def analyze():
         start, end = key.split("-")
         with open(out / "cv.log", "w") as log:
             process = subprocess.Popen(
-                [str(python), "-m", "var_cv.analyze", "--clip-id", clip_id, "--source-url", clip["source_url"],
+                [str(python), "-m", "var_cv.analyze", "--clip-id", clip_id, *source,
                  "--video", str(_out(clip_id) / "video.mp4"), "--start", start, "--end", end, "--out", str(out)],
                 cwd=ROOT / "cv", stdout=log, stderr=subprocess.STDOUT)
         _job = (clip_id, key, process)
@@ -427,6 +434,23 @@ def assess():
     return jsonify(verdict)
 
 
+def review_window(result):
+    """The offside review of every automatically detected pass in an analysed window: [{event, key, candidates}], or None
+    when the analysis predates pass detection."""
+    if "events" not in result:
+        return None
+    reviews = []
+    for event in (e for e in result["events"] or [] if e.get("type") == "pass" and isinstance(e.get("t"), (int, float))):
+        frame = _frame_at(result, event["t"])
+        team = event.get("team") or next((p.get("team") for p in frame.get("players") or [] if p.get("track_id") == event.get("passer_track_id")), None)
+        key_result, candidates = review_offside_event(result["frames"], {**event, "team": team, "shot": frame.get("shot")}, *_scale(result), view=_view(result))
+        confidence = event.get("confidence")
+        detail = "; ".join(filter(None, [f"confidence {confidence:.2f}" if isinstance(confidence, (int, float)) else None, event.get("reason")]))
+        key_result["reasons"].insert(0, f"Pass detected automatically ({detail or 'no detail'}); check the moment against the video.")
+        reviews.append({"event": event, "key": key_result, "candidates": candidates})
+    return reviews
+
+
 @var_analysis_bp.post("/var/review")
 def review():
     """One-click review of every automatically detected pass in the window."""
@@ -437,17 +461,9 @@ def review():
     result = _analysis(clip_id, key)
     if not result:
         return jsonify(error="No analysed frames for this clip window"), 404
-    if "events" not in result:
+    reviews = review_window(result)
+    if reviews is None:
         return jsonify(reviews=[], message="This analysis predates automatic pass detection; re-analyse the window or pick the moment manually.")
-    reviews = []
-    for event in (e for e in result["events"] or [] if e.get("type") == "pass" and isinstance(e.get("t"), (int, float))):
-        frame = _frame_at(result, event["t"])
-        team = event.get("team") or next((p.get("team") for p in frame.get("players") or [] if p.get("track_id") == event.get("passer_track_id")), None)
-        key_result, candidates = review_offside_event(result["frames"], {**event, "team": team, "shot": frame.get("shot")}, *_scale(result), view=_view(result))
-        confidence = event.get("confidence")
-        detail = "; ".join(filter(None, [f"confidence {confidence:.2f}" if isinstance(confidence, (int, float)) else None, event.get("reason")]))
-        key_result["reasons"].insert(0, f"Pass detected automatically ({detail or 'no detail'}); check the moment against the video.")
-        reviews.append({"event": event, "key": key_result, "candidates": candidates})
     return jsonify(reviews=reviews, message=None if reviews else "No pass was detected automatically in this window; pick the moment manually.")
 
 
