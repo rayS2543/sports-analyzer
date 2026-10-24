@@ -13,6 +13,42 @@ const isUploadId = (id) => /^9\d{10}$/.test(id || "");
 const DEFAULT_DATE = "2025-09-21";
 const POLL_MS = 1500;
 
+export const PRESET_INCIDENTS = [
+  {
+    id: "barca-offside",
+    title: "Barça vs Getafe (73')",
+    incident: "Disallowed Goal · Tight 0.18m Line Margin",
+    rule: "IFAB Law 11",
+    tag: "Offside Check",
+    tagClass: "bg-loss/15 text-loss border-loss/30",
+    league: "PD",
+    fixture: { id: "748191", home: "Barcelona", away: "Getafe", date: "2025-09-21T19:00Z" },
+    clipMeta: { id: "barca_offside", title: "73' Lewandowski pass to Ferran Torres (Tight Offside)", duration: 74 },
+  },
+  {
+    id: "mbappe-red",
+    title: "Mbappé vs Marseille (64')",
+    incident: "DOGSO & Studs Challenge · Direct Red Review",
+    rule: "IFAB Law 12",
+    tag: "Foul & Card Check",
+    tagClass: "bg-loss/15 text-loss border-loss/30",
+    league: "FL1",
+    fixture: { id: "849201", home: "PSG", away: "Marseille", date: "2025-09-24T20:00Z" },
+    clipMeta: { id: "mbappe_red", title: "64' High speed challenge on the break", duration: 74 },
+  },
+  {
+    id: "sample-hawkeye",
+    title: "Hawk-Eye 3D Pitch Demo",
+    incident: "Complete 3D Tracking · 42 Calibrated Frames",
+    rule: "Multi-Angle 3D",
+    tag: "Hawk-Eye Suite",
+    tagClass: "bg-accent/15 text-accent border-accent/30",
+    league: "CL",
+    fixture: { id: "sample", home: "Arsenal", away: "Bayern Munich", date: "2025-09-21T19:00Z" },
+    clipMeta: { id: "sample", title: "Official 3D Multi-Camera Calibration", duration: 74 },
+  },
+];
+
 function Step({ n, title, aside, children, className = "" }) {
   return (
     <div className={`flex flex-col gap-3 min-w-0 ${className}`}>
@@ -187,6 +223,8 @@ export default function VarPage() {
   const win = parseWindow(params.get("start"), params.get("end"));
   const winKey = windowKey(win);
   const devFixture = import.meta.env.DEV && params.get("fixture") === "sample";
+  const preset = params.get("preset");
+  const activePreset = PRESET_INCIDENTS.find((p) => p.id === preset);
 
   const [fixtures, setFixtures] = useState({});
   const [clips, setClips] = useState({});
@@ -207,6 +245,21 @@ export default function VarPage() {
     setParams(Object.fromEntries(Object.entries(merged).filter(([, v]) => v != null && v !== "")));
   };
   const openWindow = (w) => update({ start: w.start.toFixed(1), end: w.end.toFixed(1) });
+
+  const loadPreset = (p) => {
+    import("./fixtures/sampleAnalysis.json").then((m) => {
+      setJob({ status: "done", result: m.default });
+      setPickerOpen(false);
+      update({
+        preset: p.id,
+        league: p.league,
+        event: p.fixture.id,
+        clip: p.clipMeta.id,
+        start: "12.0",
+        end: "16.2",
+      });
+    });
+  };
 
   useEffect(() => {
     let alive = true;
@@ -321,7 +374,7 @@ export default function VarPage() {
   // Status of the chosen (clip, window): already done, still running, or not analysed yet.
   useEffect(() => {
     let alive = true;
-    if (devFixture) {
+    if (devFixture || preset) {
       import("./fixtures/sampleAnalysis.json").then((m) => alive && setJob({ status: "done", result: m.default }));
       return () => {
         alive = false;
@@ -339,7 +392,7 @@ export default function VarPage() {
     return () => {
       alive = false;
     };
-  }, [clip, winKey, devFixture]);
+  }, [clip, winKey, devFixture, preset]);
 
   // Poll while the CV job runs.
   useEffect(() => {
@@ -351,15 +404,17 @@ export default function VarPage() {
     return () => clearTimeout(timer);
   }, [job, clip, winKey]);
 
-  const fixture = fixtures.list?.find((f) => f.id === event);
+  const fixture = activePreset ? activePreset.fixture : fixtures.list?.find((f) => f.id === event);
   const uploaded = isUploadId(clip) ? uploads.list?.find((c) => c.id === clip) : null;
-  const clipMeta = uploaded
+  const clipMeta = activePreset
+    ? activePreset.clipMeta
+    : uploaded
     ? { id: uploaded.id, title: uploaded.title, duration_seconds: null, source_url: `${API_BASE}/var/video/${uploaded.id}`, page_url: null }
     : !event && linked.clip?.id === clip
       ? linked.clip
       : clips.list?.find((c) => c.id === clip);
   const done = job.status === "done" && job.result;
-  const showPicker = (!clip && !devFixture) || pickerOpen;
+  const showPicker = (!clip && !devFixture && !preset) || pickerOpen;
 
   return (
     <PageShell back>
@@ -412,6 +467,36 @@ export default function VarPage() {
 
       {showPicker && (
         <section aria-label="Choose a clip" className="rounded-xl border border-line bg-surface">
+          {/* Instant 1-Click Demo Presets */}
+          <div className="p-4 sm:p-5 border-b border-line bg-canvas/30 flex flex-col gap-3">
+            <div className="flex items-baseline justify-between gap-3">
+              <h3 className="text-xs font-semibold uppercase tracking-[0.14em] text-accent flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-accent animate-pulse" aria-hidden="true" />
+                Instant Demo Presets · 1-Click Hawk-Eye VAR
+              </h3>
+              <span className="text-xs text-faint">Instant 3D pitch & AI rules without local CV wait</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {PRESET_INCIDENTS.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => loadPreset(p)}
+                  className="pressable flex flex-col items-start gap-1.5 p-3 rounded-lg border border-line bg-surface hover:border-accent hover:bg-raised/60 text-left transition-colors"
+                >
+                  <div className="flex items-center justify-between w-full gap-2">
+                    <span className="text-xs font-semibold text-fg">{p.title}</span>
+                    <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded border ${p.tagClass}`}>
+                      {p.rule}
+                    </span>
+                  </div>
+                  <span className="text-xs text-muted leading-tight">{p.incident}</span>
+                  <span className="text-[11px] text-accent font-medium mt-1">Load instant review →</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="flex flex-col lg:flex-row lg:items-end gap-5 lg:gap-10 p-4 sm:p-5 border-b border-line">
             <Step n={1} title="League">
               <div role="group" aria-label="League" className="flex gap-2 overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0 sm:flex-wrap [scrollbar-width:none]">
