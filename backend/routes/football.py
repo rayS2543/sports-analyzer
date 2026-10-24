@@ -6,6 +6,7 @@ import db
 from football_client import FootballDataError, get
 from fotmob_client import FotMobError, _normalize, champions_league_fixtures
 from leagues import DEFAULT_LEAGUE, LEAGUES, get_league
+from routes.predictions import compute_predictions_for_league, compute_ratings_for_league
 
 football_bp = Blueprint("football", __name__)
 
@@ -182,24 +183,7 @@ def list_leagues():
     return jsonify([{"code": code, **info} for code, info in LEAGUES.items()])
 
 
-@football_bp.route("/matches/today")
-def get_todays_matches():
-    """Today's fixtures across every supported league, tagged with league info.
-
-    Domestic leagues and Champions League share one football-data.org request.
-    UCL is also read from that competition's match list. When neither feed
-    includes a Champions League fixture, FotMob's public day list fills it in.
-    `date` is the viewer's local calendar day (YYYY-MM-DD); omitted, it is
-    today in UTC.
-    """
-    requested = request.args.get("date")
-    if requested is None:
-        today = datetime.now(timezone.utc).date().isoformat()
-    else:
-        today = _calendar_day(requested)
-        if today is None:
-            return jsonify({"error": "date must be YYYY-MM-DD"}), 400
-
+def _fetch_todays_matches(today):
     collected = {}
     primary_error = None
 
@@ -253,10 +237,51 @@ def get_todays_matches():
         pass
 
     if not collected and primary_error:
-        return jsonify({"error": primary_error.message}), primary_error.status_code
+        raise primary_error
 
-    all_matches = sorted(collected.values(), key=lambda m: (m["kickoff"], m["home"], m["away"]))
+    return sorted(collected.values(), key=lambda m: (m["kickoff"], m["home"], m["away"]))
+
+
+@football_bp.route("/matches/today")
+def get_todays_matches():
+    """Today's fixtures across every supported league, tagged with league info.
+
+    Domestic leagues and Champions League share one football-data.org request.
+    UCL is also read from that competition's match list. When neither feed
+    includes a Champions League fixture, FotMob's public day list fills it in.
+    `date` is the viewer's local calendar day (YYYY-MM-DD); omitted, it is
+    today in UTC.
+    """
+    requested = request.args.get("date")
+    if requested is None:
+        today = datetime.now(timezone.utc).date().isoformat()
+    else:
+        today = _calendar_day(requested)
+        if today is None:
+            return jsonify({"error": "date must be YYYY-MM-DD"}), 400
+
+    try:
+        all_matches = _fetch_todays_matches(today)
+    except FootballDataError as e:
+        return jsonify({"error": e.message}), e.status_code
+
     return jsonify(all_matches)
+
+
+def _fetch_matches(league):
+    data = get(f"/competitions/{league}/matches", params={"status": "FINISHED"})
+    if "matches" not in data:
+        raise FootballDataError("Unexpected API response", status_code=500, data=data)
+
+    cleanedData = []
+    for match in data["matches"]:
+        cleaned = _clean_finished_match(match)
+        if cleaned is not None:
+            cleanedData.append(cleaned)
+    cleanedData.sort(key=lambda m: (m["date"], m["home"], m["away"]), reverse=True)
+    # Persist the whole season so /analytics/form has history; show only the latest.
+    db.upsert_matches(cleanedData, league)
+    return cleanedData[:RECENT_RESULTS]
 
 
 @football_bp.route("/matches")
@@ -267,22 +292,14 @@ def get_matches():
 
     try:
         # Same call (and cache entry) /predictions uses for its Elo history.
-        data = get(f"/competitions/{league}/matches", params={"status": "FINISHED"})
+        cleanedData = _fetch_matches(league)
     except FootballDataError as e:
-        return jsonify({"error": e.message}), e.status_code
+        body = {"error": e.message}
+        if e.data is not None:
+            body["data"] = e.data
+        return jsonify(body), e.status_code
 
-    if "matches" not in data:
-        return jsonify({"error": "Unexpected API response", "data": data}), 500
-
-    cleanedData = []
-    for match in data["matches"]:
-        cleaned = _clean_finished_match(match)
-        if cleaned is not None:
-            cleanedData.append(cleaned)
-    cleanedData.sort(key=lambda m: (m["date"], m["home"], m["away"]), reverse=True)
-    # Persist the whole season so /analytics/form has history; show only the latest.
-    db.upsert_matches(cleanedData, league)
-    return jsonify(cleanedData[:RECENT_RESULTS])
+    return jsonify(cleanedData)
 
 
 @football_bp.route("/teams")
@@ -401,25 +418,10 @@ def get_team_detail():
     )
 
 
-@football_bp.route("/standings")
-def get_standings():
-    """Return the competition standings (ordered by position).
-
-    Uses football-data.org's /competitions/{league}/standings, which
-    includes a `position` field for each team. Normalized to a simple
-    list of teams with position and common stats.
-    """
-    league = request.args.get("league", DEFAULT_LEAGUE)
-    if get_league(league) is None:
-        return jsonify({"error": f"Unknown league code '{league}'"}), 400
-
-    try:
-        data = get(f"/competitions/{league}/standings")
-    except FootballDataError as e:
-        return jsonify({"error": e.message}), e.status_code
-
+def _fetch_standings(league):
+    data = get(f"/competitions/{league}/standings")
     if "standings" not in data:
-        return jsonify({"error": "Unexpected API response", "data": data}), 500
+        raise FootballDataError("Unexpected API response", status_code=500, data=data)
 
     # football-data can return multiple standings (TOTAL, HOME, AWAY). We want TOTAL
     total = None
@@ -427,8 +429,11 @@ def get_standings():
         if s.get("type") == "TOTAL":
             total = s
             break
-    if total is None:
+    if total is None and data["standings"]:
         total = data["standings"][0]
+
+    if total is None:
+        return []
 
     cleaned = []
     for entry in total.get("table", []):
@@ -451,4 +456,96 @@ def get_standings():
         )
 
     cleaned.sort(key=lambda e: e.get("position") if e.get("position") is not None else 999)
+    return cleaned
+
+
+@football_bp.route("/standings")
+def get_standings():
+    """Return the competition standings (ordered by position).
+
+    Uses football-data.org's /competitions/{league}/standings, which
+    includes a `position` field for each team. Normalized to a simple
+    list of teams with position and common stats.
+    """
+    league = request.args.get("league", DEFAULT_LEAGUE)
+    if get_league(league) is None:
+        return jsonify({"error": f"Unknown league code '{league}'"}), 400
+
+    try:
+        cleaned = _fetch_standings(league)
+    except FootballDataError as e:
+        body = {"error": e.message}
+        if e.data is not None:
+            body["data"] = e.data
+        return jsonify(body), e.status_code
+
     return jsonify(cleaned)
+
+
+@football_bp.route("/dashboard-overview")
+def dashboard_overview():
+    """Consolidated dashboard overview cutting multiple round-trips to one.
+
+    Combines today's matches, league standings, recent results, Elo ratings,
+    match predictions, and team rosters into 1 single response.
+    """
+    league = request.args.get("league", DEFAULT_LEAGUE)
+    league_info = get_league(league)
+    if league_info is None:
+        return jsonify({"error": f"Unknown league code '{league}'"}), 400
+
+    requested = request.args.get("date")
+    if requested is None:
+        today = datetime.now(timezone.utc).date().isoformat()
+    else:
+        today = _calendar_day(requested)
+        if today is None:
+            return jsonify({"error": "date must be YYYY-MM-DD"}), 400
+
+    overview = {
+        "league": league,
+        "league_name": league_info.get("name"),
+        "date": today,
+        "leagues": [{"code": code, **info} for code, info in LEAGUES.items()],
+    }
+
+    # 1. Today's fixtures across leagues
+    try:
+        today_matches = _fetch_todays_matches(today)
+    except FootballDataError:
+        today_matches = []
+    overview["today_matches"] = today_matches
+    overview["today_games"] = today_matches
+
+    # 2. Standings
+    try:
+        overview["standings"] = _fetch_standings(league)
+    except FootballDataError as e:
+        return jsonify({"error": e.message}), e.status_code
+
+    # 3. Recent matches
+    try:
+        matches = _fetch_matches(league)
+    except FootballDataError as e:
+        return jsonify({"error": e.message}), e.status_code
+    overview["matches"] = matches
+    overview["recent_matches"] = matches
+
+    # 4. Teams roster
+    try:
+        overview["teams"] = _competition_teams(league)
+    except FootballDataError as e:
+        return jsonify({"error": e.message}), e.status_code
+
+    # 5. Predictions & Elo Ratings
+    try:
+        overview["predictions"] = compute_predictions_for_league(league)
+    except FootballDataError:
+        overview["predictions"] = []
+
+    try:
+        overview["ratings"] = compute_ratings_for_league(league)
+    except FootballDataError:
+        overview["ratings"] = None
+
+    return jsonify(overview)

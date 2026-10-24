@@ -5,8 +5,10 @@ window /matches queries against football-data.org, which is what
 /analytics/form relies on to report a team's recent form.
 """
 
+import json
 import os
 import sqlite3
+import time
 from contextlib import contextmanager
 
 DEFAULT_DB_PATH = os.path.join(os.path.dirname(__file__), "data.db")
@@ -45,13 +47,71 @@ def init_db():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS api_cache (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                expires_at REAL,
+                updated_at REAL NOT NULL
+            )
+            """
+        )
 
 
 def reset_db():
     """Drop and recreate all tables. Used by tests to isolate state."""
     with get_connection() as conn:
         conn.execute("DROP TABLE IF EXISTS matches")
+        conn.execute("DROP TABLE IF EXISTS api_cache")
     init_db()
+
+
+def cache_get(key):
+    """Retrieve cached data by key.
+
+    Returns:
+        (data, is_stale): tuple of deserialized data (or None if not found)
+        and boolean indicating if the entry has expired.
+    """
+    now = time.time()
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT value, expires_at FROM api_cache WHERE key = ?",
+            (key,),
+        ).fetchone()
+    if row is None:
+        return None, True
+
+    data = json.loads(row["value"])
+    expires_at = row["expires_at"]
+    is_stale = expires_at is not None and now > expires_at
+    return data, is_stale
+
+
+def cache_set(key, value, ttl_seconds=None):
+    """Store data in cache with an optional TTL in seconds."""
+    now = time.time()
+    expires_at = now + ttl_seconds if ttl_seconds is not None else None
+    serialized = json.dumps(value)
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO api_cache (key, value, expires_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                expires_at = excluded.expires_at,
+                updated_at = excluded.updated_at
+            """,
+            (key, serialized, expires_at, now),
+        )
+
+
+def cache_clear():
+    """Clear all cached API responses."""
+    with get_connection() as conn:
+        conn.execute("DELETE FROM api_cache")
 
 
 def _parse_score(score):
