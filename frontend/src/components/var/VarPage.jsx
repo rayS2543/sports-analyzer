@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import axios from "axios";
 import { API_BASE } from "../../apiBase";
 import { chipClasses } from "../LeagueChips";
@@ -8,6 +8,8 @@ import VarViewer, { apiError } from "./VarViewer";
 import ClipPreview from "./ClipPreview";
 import { formatClock, parseWindow } from "./varMath";
 
+// Clips the user uploaded get ids that start with 9 and have 11 digits; ESPN's are 8 digits.
+const isUploadId = (id) => /^9\d{10}$/.test(id || "");
 const DEFAULT_DATE = "2025-09-21";
 const POLL_MS = 1500;
 
@@ -41,27 +43,32 @@ const daysBefore = (iso, n) => new Date(Date.parse(`${iso}T00:00:00Z`) - n * 864
 // Offside calls ESPN's commentary pairs with a VAR check, across two weeks, so nobody scrolls through recaps.
 function FindReviews({ league, date, onPick }) {
   const [state, setState] = useState({});
-  const search = () => {
+  const search = (kind) => {
     setState({ loading: true });
     axios
-      .get(`${API_BASE}/var/discover`, { params: { league, from: daysBefore(date, 13), to: date, kind: "offside" } })
-      .then((res) => setState({ reviews: res.data?.reviews || [] }))
-      .catch((err) => setState({ error: apiError(err, "Couldn't search ESPN's commentary.") }));
+      .get(`${API_BASE}/var/discover`, { params: { league, from: daysBefore(date, 13), to: date, kind } })
+      .then((res) => setState(kind === "goal" ? { goals: res.data?.clips || [], to: date } : { reviews: res.data?.reviews || [], to: date }))
+      .catch((err) => setState({ error: apiError(err, "Couldn't search ESPN.") }));
   };
-  useEffect(() => setState({}), [league, date]);
+  useEffect(() => setState({}), [league]); // choosing a result changes the date but keeps the list
+  const button = "pressable h-8 px-3 rounded-lg border border-line text-sm font-medium hover:border-faint";
   return (
     <div className="p-4 sm:p-5 border-b border-line flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-3">
-        <button type="button" onClick={search} disabled={state.loading} className="pressable h-8 px-3 rounded-lg border border-line text-sm font-medium hover:border-faint">
+        <button type="button" onClick={() => search("offside")} disabled={state.loading} className={button}>
           Find VAR offside reviews
         </button>
+        <button type="button" onClick={() => search("goal")} disabled={state.loading} className={button}>
+          Find goals to check
+        </button>
         <span className="text-xs text-faint">
-          {LEAGUE_NAMES[league]}, the 14 days up to {formatDay(date)}. Taken from ESPN&apos;s match commentary; a clip is attached when its headline names the player.
+          {LEAGUE_NAMES[league]}, the 14 days up to {formatDay(state.to || date)}. Reviews come from ESPN&apos;s match commentary; a clip is attached when its
+          headline names the player, else the match&apos;s short highlights. Goals are short clips you can check for offside.
         </span>
       </div>
       {state.loading && <Loading label="Searching ESPN" />}
       {state.error && <Note tone="text-loss">{state.error}</Note>}
-      {state.reviews?.length === 0 && <Note>No VAR offside review with commentary in this range. Try an earlier date.</Note>}
+      {state.reviews?.length === 0 && <Note>No VAR offside review with commentary in this range. Try an earlier date, or find goals to check.</Note>}
       {state.reviews?.length > 0 && (
         <ul className="flex flex-col gap-1">
           {state.reviews.map((r) => (
@@ -71,13 +78,37 @@ function FindReviews({ league, date, onPick }) {
                 <span className="text-faint"> · {r.minute} · </span>
                 <span>{r.player || "player unknown"}: {r.outcome}</span>
               </span>
-              {r.clip ? (
-                <button type="button" onClick={() => onPick(r)} className="pressable shrink-0 text-accent font-medium hover:underline" aria-label={`Open the clip for ${r.match} ${r.minute}`}>
-                  Open clip
+              {r.clip || r.highlights ? (
+                <button
+                  type="button"
+                  onClick={() => onPick(r, r.clip || r.highlights)}
+                  className="pressable shrink-0 text-accent font-medium hover:underline"
+                  aria-label={`${r.clip ? "Open the clip" : "Open the match highlights"} for ${r.match} ${r.minute}`}
+                >
+                  {r.clip ? "Open clip" : "Open highlights"}
                 </button>
               ) : (
-                <span className="shrink-0 text-xs text-faint">no ESPN clip</span>
+                <button type="button" onClick={() => onPick(r, null)} className="pressable shrink-0 text-muted font-medium hover:text-fg" aria-label={`Open the match ${r.match}`}>
+                  Open match <span className="text-xs text-faint">(no clip)</span>
+                </button>
               )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {state.goals?.length === 0 && <Note>No goal clips in this range. Try an earlier date.</Note>}
+      {state.goals?.length > 0 && (
+        <ul className="flex flex-col gap-1">
+          {state.goals.map((g) => (
+            <li key={g.id} className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm hover:bg-raised/60">
+              <span className="flex-1 min-w-0">
+                <span className="font-medium">{g.title}</span>
+                <span className="text-faint"> · {g.match} · {formatDay(g.date)}</span>
+              </span>
+              <span className="font-mono text-xs text-faint tabular-nums">{mmss(g.duration_seconds)}</span>
+              <button type="button" onClick={() => onPick({ date: g.date, event: g.event }, g)} className="pressable shrink-0 text-accent font-medium hover:underline" aria-label={`Open the goal clip ${g.title}`}>
+                Open clip
+              </button>
             </li>
           ))}
         </ul>
@@ -162,6 +193,10 @@ export default function VarPage() {
   const [windows, setWindows] = useState(null);
   const [job, setJob] = useState({ status: "idle" });
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [uploads, setUploads] = useState({});
+  const [sending, setSending] = useState(false);
+  const [linked, setLinked] = useState({}); // an ESPN video picked by link or id (no match): its details, or an error
+  const [link, setLink] = useState("");
   // Which (clip, window) the page is showing, so late responses for an old window are dropped.
   const currentRef = useRef(null);
   currentRef.current = `${clip}:${winKey}`;
@@ -198,6 +233,55 @@ export default function VarPage() {
     };
   }, [league, event]);
 
+  const showingUploads = pickerOpen || !clip || isUploadId(clip);
+  useEffect(() => {
+    if (!showingUploads || devFixture) return;
+    let alive = true;
+    axios
+      .get(`${API_BASE}/var/uploads`)
+      .then((res) => alive && setUploads({ list: res.data?.clips || [] }))
+      .catch((err) => alive && setUploads({ error: apiError(err, "Couldn't load your uploaded clips.") }));
+    return () => {
+      alive = false;
+    };
+  }, [showingUploads, devFixture]);
+
+  const lookup = (text, thenOpen) =>
+    axios
+      .get(`${API_BASE}/var/clip`, { params: { link: text } })
+      .then((res) => {
+        const c = res.data?.clip;
+        setLinked({ clip: c });
+        if (thenOpen) {
+          update({ event: null, clip: c.id, start: null, end: null });
+          setPickerOpen(false);
+        }
+      })
+      .catch((err) => setLinked({ error: apiError(err, "Couldn't look that clip up on ESPN.") }));
+
+  // A shared link with a clip but no match: look the clip up so it can be previewed.
+  useEffect(() => {
+    if (clip && !event && !isUploadId(clip) && !devFixture && linked.clip?.id !== clip) lookup(clip, false);
+  }, [clip, event, devFixture]);
+
+  const sendFile = (file) => {
+    if (!file) return;
+    const body = new FormData();
+    body.append("file", file);
+    setSending(true);
+    setUploads((u) => ({ ...u, error: null }));
+    axios
+      .post(`${API_BASE}/var/upload`, body)
+      .then((res) => {
+        const c = res.data?.clip;
+        setUploads((u) => ({ list: [c, ...(u.list || []).filter((x) => x.id !== c.id)] }));
+        update({ event: null, clip: c.id, start: null, end: null });
+        setPickerOpen(false);
+      })
+      .catch((err) => setUploads((u) => ({ ...u, error: apiError(err, "Couldn't upload that file.") })))
+      .finally(() => setSending(false));
+  };
+
   // Earlier analysed windows for this clip; refreshed whenever a job settles.
   const settled = job.status === "done" || job.status === "failed";
   useEffect(() => {
@@ -223,7 +307,7 @@ export default function VarPage() {
     const key = `${clip}:${windowKey(w)}`;
     setJob({ status: "running", progress: { stage: "queued", progress: 0 } });
     axios
-      .post(`${API_BASE}/var/analyze`, { league, event, clip, start: w.start, end: w.end })
+      .post(`${API_BASE}/var/analyze`, isUploadId(clip) || !event ? { clip, start: w.start, end: w.end } : { league, event, clip, start: w.start, end: w.end })
       .then(() => fetchStatus(key, w))
       .catch((err) => currentRef.current === key && setJob({ status: "failed", error: apiError(err, "Couldn't start the analysis.") }));
   };
@@ -268,7 +352,12 @@ export default function VarPage() {
   }, [job, clip, winKey]);
 
   const fixture = fixtures.list?.find((f) => f.id === event);
-  const clipMeta = clips.list?.find((c) => c.id === clip);
+  const uploaded = isUploadId(clip) ? uploads.list?.find((c) => c.id === clip) : null;
+  const clipMeta = uploaded
+    ? { id: uploaded.id, title: uploaded.title, duration_seconds: null, source_url: `${API_BASE}/var/video/${uploaded.id}`, page_url: null }
+    : !event && linked.clip?.id === clip
+      ? linked.clip
+      : clips.list?.find((c) => c.id === clip);
   const done = job.status === "done" && job.result;
   const showPicker = (!clip && !devFixture) || pickerOpen;
 
@@ -280,6 +369,9 @@ export default function VarPage() {
         <span aria-hidden="true" className="absolute left-[4px] inset-y-0 w-0.5 bg-accent rounded-full" />
         <p className="text-xs font-medium uppercase tracking-[0.18em] text-accent">Virtual VAR</p>
         <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight">Check the call from the footage</h1>
+        <Link to="/var/checks" className="pressable self-start text-sm text-accent font-medium hover:underline">
+          See the automatic offside checks →
+        </Link>
         <p className="text-muted text-[15px] leading-relaxed">
           Pick a clip from ESPN. We place every player on a 3D pitch from the broadcast, then test offside against what the camera
           actually shows. The official decision stays alongside, never mixed in.
@@ -350,12 +442,90 @@ export default function VarPage() {
             </Step>
           </div>
 
+          <form
+            className="p-4 sm:p-5 border-b border-line flex flex-col gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (link.trim()) lookup(link.trim(), true);
+            }}
+          >
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="sr-only" htmlFor="var-link">
+                ESPN video link or ID
+              </label>
+              <input
+                id="var-link"
+                type="text"
+                value={link}
+                onChange={(e) => setLink(e.target.value)}
+                placeholder="Paste an ESPN video link or ID"
+                className="h-8 flex-1 min-w-[16rem] rounded-lg border border-line bg-canvas px-2.5 text-sm hover:border-faint"
+              />
+              <button type="submit" className="pressable h-8 px-3 rounded-lg border border-line text-sm font-medium hover:border-faint">
+                Get clip
+              </button>
+            </div>
+            {linked.error && <Note tone="text-loss">{linked.error}</Note>}
+            <span className="text-xs text-faint">Any espn.com video or watch link works, with no match needed. The clip is fetched from ESPN for you.</span>
+          </form>
+
+          <div
+            className="p-4 sm:p-5 border-b border-line flex flex-col gap-3"
+            data-testid="drop-zone"
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              sendFile(e.dataTransfer?.files?.[0]);
+            }}
+          >
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="pressable h-8 px-3 inline-flex items-center rounded-lg border border-line text-sm font-medium hover:border-faint cursor-pointer">
+                {sending ? "Uploading…" : "Upload your own clip"}
+                <input
+                  type="file"
+                  accept=".mp4,video/mp4"
+                  disabled={sending}
+                  className="sr-only"
+                  aria-label="Upload your own clip"
+                  onChange={(e) => {
+                    sendFile(e.target.files?.[0]);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+              <span className="text-xs text-faint">
+                An MP4 you recorded or have the right to use, up to 1 GB: drop it here, or save it into the var_data/inbox folder and it appears below. It is stored on this computer and analysed here.
+              </span>
+            </div>
+            {uploads.error && <Note tone="text-loss">{uploads.error}</Note>}
+            {uploads.list?.length > 0 && (
+              <ul className="flex flex-col gap-1">
+                {uploads.list.map((c) => (
+                  <li key={c.id} className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm hover:bg-raised/60">
+                    <span className="flex-1 min-w-0 truncate font-medium">{c.title}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        update({ event: null, clip: c.id, start: null, end: null });
+                        setPickerOpen(false);
+                      }}
+                      className="pressable shrink-0 text-accent font-medium hover:underline"
+                      aria-label={`Open your clip ${c.title}`}
+                    >
+                      Open clip
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
           <FindReviews
             league={league}
             date={date}
-            onPick={(r) => {
-              update({ date: r.date, event: r.event, clip: r.clip.id, start: null, end: null });
-              setPickerOpen(false);
+            onPick={(r, picked) => {
+              update({ date: r.date, event: r.event, clip: picked?.id ?? null, start: null, end: null });
+              if (picked) setPickerOpen(false);
             }}
           />
 
@@ -450,9 +620,12 @@ export default function VarPage() {
       {!showPicker && clip && !win && (
         <>
           {clipMeta && <ClipPreview key={clip} clip={clipMeta} windows={windows} onAnalyze={analyze} onOpenWindow={openWindow} />}
-          {!clipMeta && event && !clips.list && !clips.error && <Loading label="Loading clip" />}
-          {!clipMeta && (clips.error || clips.list) && <Note tone="text-loss">{clips.error || "This clip isn't in ESPN's list for the match any more."}</Note>}
-          {!event && <Note>Add the match (event) to the link to preview this clip.</Note>}
+          {!clipMeta && isUploadId(clip) && !uploads.list && !uploads.error && <Loading label="Loading clip" />}
+          {!clipMeta && isUploadId(clip) && (uploads.list || uploads.error) && <Note tone="text-loss">{uploads.error || "This uploaded clip isn't on this computer any more."}</Note>}
+          {!clipMeta && !isUploadId(clip) && event && !clips.list && !clips.error && <Loading label="Loading clip" />}
+          {!clipMeta && !isUploadId(clip) && (clips.error || clips.list) && <Note tone="text-loss">{clips.error || "This clip isn't in ESPN's list for the match any more."}</Note>}
+          {!clipMeta && !event && !isUploadId(clip) && !linked.error && <Loading label="Looking the clip up on ESPN" />}
+          {!event && !isUploadId(clip) && linked.error && <Note tone="text-loss">{linked.error}</Note>}
         </>
       )}
 

@@ -10,6 +10,7 @@ import { FavoritesProvider } from "./favorites";
 
 // Lazy so three.js only loads when someone opens the VAR room.
 const VarPage = lazy(() => import("./components/var/VarPage"));
+const ChecksPage = lazy(() => import("./components/var/ChecksPage"));
 
 export default function App() {
   return (
@@ -22,6 +23,14 @@ export default function App() {
           <Route path="/match/:id" element={<MatchDetailPage />} />
           <Route path="/player/:id" element={<PlayerDetailPage />} />
           <Route path="/team/:league/:name" element={<TeamDetailPage />} />
+          <Route
+            path="/var/checks"
+            element={
+              <Suspense fallback={null}>
+                <ChecksPage />
+              </Suspense>
+            }
+          />
           <Route
             path="/var"
             element={
