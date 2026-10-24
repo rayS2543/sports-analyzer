@@ -18,7 +18,20 @@ def get_team_news():
     teams = [t for t in request.args.get("teams", "").split(",") if t]
     if not teams:
         return jsonify({"items": [], "error": "teams parameter is required"}), 400
-    return jsonify({"items": news_client.for_teams(teams)})
+    items, sources = news_client.for_teams(teams)
+    return jsonify({"items": items, "sources": sources})
+
+
+@news_bp.route("/news/translate", methods=["POST"])
+def translate_headlines():
+    """English for just the headlines the page is about to show, so a metered
+    translation quota is spent on visible stories only. null = couldn't translate."""
+    body = request.get_json(silent=True) or {}
+    titles = [str(t)[:300] for t in body.get("titles", [])][:60]
+    lang = str(body.get("lang", ""))[:5]
+    if not titles or not lang:
+        return jsonify({"error": "lang and titles are required"}), 400
+    return jsonify({"titles": news_client.translate(titles, lang)})
 
 
 @news_bp.route("/news")
