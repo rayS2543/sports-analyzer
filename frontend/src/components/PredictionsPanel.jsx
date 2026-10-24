@@ -83,12 +83,20 @@ function Prediction({ p }) {
   );
 }
 
-export default function PredictionsPanel({ league }) {
-  const [predictions, setPredictions] = useState(null);
+export default function PredictionsPanel({ league, initialPredictions }) {
+  const [predictions, setPredictions] = useState(initialPredictions ?? null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
     if (!league) return;
+    if (initialPredictions !== undefined) {
+      if (initialPredictions !== null) {
+        setPredictions(initialPredictions);
+      } else {
+        setPredictions(null);
+      }
+      return;
+    }
 
     setError(null);
     setPredictions(null);
@@ -107,7 +115,7 @@ export default function PredictionsPanel({ league }) {
         setError("Could not reach the predictions service.");
         setPredictions([]);
       });
-  }, [league]);
+  }, [league, initialPredictions]);
 
   return (
     <Section title="Match tips" aside="Elo · home / draw / away">

@@ -7,11 +7,20 @@ import { ErrorNote, Section, SkeletonRows } from "./ui";
 const th = "py-2.5 px-2 font-medium text-faint text-xs";
 const td = "py-2.5 px-2 text-center tabular-nums text-muted";
 
-export default function StandingsTable({ league }) {
-  const [standings, setStandings] = useState(null);
+export default function StandingsTable({ league, initialStandings }) {
+  const [standings, setStandings] = useState(initialStandings ?? null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    if (initialStandings !== undefined) {
+      if (initialStandings !== null) {
+        setStandings(initialStandings);
+      } else {
+        setStandings(null);
+      }
+      return;
+    }
+
     setError(null);
     setStandings(null);
     fetch(`${API_BASE}/standings?league=${league}`)
@@ -29,7 +38,7 @@ export default function StandingsTable({ league }) {
         setStandings([]);
         setError("Could not reach the backend");
       });
-  }, [league]);
+  }, [league, initialStandings]);
 
   return (
     <Section title="Table">
