@@ -31,6 +31,12 @@ def idle_cv_jobs(monkeypatch):
         monkeypatch.setattr(module, name, None)
 
 
+@pytest.fixture(autouse=True)
+def no_real_translation_key(monkeypatch):
+    """backend/.env may hold a real DeepL key; tests must never spend its quota."""
+    monkeypatch.delenv("DEEPL_API_KEY", raising=False)
+
+
 @pytest.fixture
 def app():
     flask_app.config.update({"TESTING": True})

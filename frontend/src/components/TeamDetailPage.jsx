@@ -363,7 +363,7 @@ export default function TeamDetailPage() {
           </Section>
 
           <Section title="News">
-            <NewsFeed teams={[displayName]} />
+            <NewsFeed teams={[`${displayName}@${league}`]} />
           </Section>
         </>
       )}

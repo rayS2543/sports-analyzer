@@ -131,6 +131,11 @@ export default function FeedPage() {
   const [prefs, update] = usePrefs();
   const [sources, setSources] = useState([]);
   const names = favorites.map((f) => f.name);
+  // "Name@League" tells the backend which country's press to search.
+  const spec = (name) => {
+    const { league } = favorites.find((f) => f.name === name);
+    return league ? `${name}@${league}` : name;
+  };
   const pinned = names.includes(prefs.pinned) ? prefs.pinned : null;
   const [tab, setTab] = useState(pinned || "all");
   const active = tab === "all" || names.includes(tab) ? tab : "all";
@@ -188,7 +193,7 @@ export default function FeedPage() {
 
           <Customize prefs={prefs} update={update} sources={sources} />
 
-          <NewsFeed teams={active === "all" ? names : [active]} prefs={prefs} onSources={setSources} />
+          <NewsFeed teams={(active === "all" ? names : [active]).map(spec)} prefs={prefs} onSources={setSources} />
         </section>
       )}
     </PageShell>

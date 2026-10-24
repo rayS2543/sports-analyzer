@@ -1,5 +1,5 @@
 import { API_BASE } from "../apiBase";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { EmptyNote, ErrorNote, SkeletonRows } from "./ui";
 
 export const TOPICS = [
@@ -53,7 +53,9 @@ const TONE = {
 
 export const TIERS = {
   high: ["Established source", "bg-win/10 text-win ring-win/30"],
-  medium: ["Club-leaning source", "bg-accent/10 text-accent ring-accent/30"],
+  medium: ["Credible, with caveats", "bg-accent/10 text-accent ring-accent/30"],
+  club: ["Club\u2019s own site", "bg-raised text-muted ring-line"],
+  mixed: ["Mixed record", "bg-raised text-muted ring-line"],
   low: ["Fan site", "bg-loss/10 text-loss ring-loss/30"],
 };
 
@@ -125,24 +127,21 @@ function Story({ article, showTeam, showOriginal }) {
           {article.original_title}
         </p>
       )}
-      {article.summary && <p className="max-w-[70ch] text-sm text-muted line-clamp-2">{article.summary}</p>}
+      {article.summary && article.lang === "en" && <p className="max-w-[70ch] text-sm text-muted line-clamp-2">{article.summary}</p>}
       {article.context && <ContextNote context={article.context} />}
     </article>
   );
 }
 
-function FeedHealth({ sources }) {
+function FeedHealth({ sources, translationFailed }) {
   const failed = sources.filter((s) => !s.ok);
-  const untranslated = sources.filter((s) => s.ok && s.count && s.translated === false);
   return (
     <div className="flex flex-col gap-1 text-xs text-faint">
       <p>
         {sources.length - failed.length} of {sources.length} sources loaded
       </p>
       {failed.length > 0 && <p className="text-loss">Couldn’t load: {failed.map((s) => s.name).join(", ")}</p>}
-      {untranslated.length > 0 && (
-        <p>Translation unavailable right now for {untranslated.map((s) => s.name).join(", ")}; showing original headlines.</p>
-      )}
+      {translationFailed && <p>Translation unavailable right now; showing original headlines.</p>}
     </div>
   );
 }
@@ -152,6 +151,14 @@ export default function NewsFeed({ teams, prefs = DEFAULT_PREFS, onSources }) {
   const [error, setError] = useState(null);
   const [shown, setShown] = useState(PAGE);
   const key = teams.join(",");
+  // Headlines are translated only once they are about to be shown (and cached
+  // here per text), so a metered translation quota isn't spent on hidden stories.
+  const [translations, setTranslations] = useState({});
+  const [translationFailed, setTranslationFailed] = useState(false);
+  const asked = useRef(new Set());
+  const items = data ? applyPrefs(data.items, prefs) : [];
+  const visible = items.slice(0, shown);
+  const wanted = visible.filter((a) => a.lang !== "en").map((a) => `${a.lang}|${a.title}`);
 
   useEffect(() => {
     if (!teams.length) {
@@ -177,19 +184,46 @@ export default function NewsFeed({ teams, prefs = DEFAULT_PREFS, onSources }) {
     // Refetch only when the teams change, not when the parent re-renders onSources.
   }, [key]);
 
+  useEffect(() => {
+    const fresh = [...new Set(wanted)].filter((k) => !asked.current.has(k));
+    const byLang = {};
+    fresh.forEach((k) => {
+      asked.current.add(k);
+      const [lang, ...rest] = k.split("|");
+      (byLang[lang] ||= []).push(rest.join("|"));
+    });
+    Object.entries(byLang).forEach(([lang, titles]) => {
+      fetch(`${API_BASE}/news/translate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lang, titles }),
+      })
+        .then((res) => res.json())
+        .then((body) => {
+          const out = body.titles || [];
+          if (out.some((t) => !t)) setTranslationFailed(true);
+          setTranslations((old) => ({ ...old, ...Object.fromEntries(titles.map((t, i) => [`${lang}|${t}`, out[i] || null])) }));
+        })
+        .catch(() => setTranslationFailed(true));
+    });
+  }, [wanted.join("\n")]);
+
   if (error) return <ErrorNote>{error}</ErrorNote>;
   if (data === null) return <SkeletonRows rows={4} />;
 
-  const items = applyPrefs(data.items, prefs);
+  const shownArticle = (a) => {
+    const t = translations[`${a.lang}|${a.title}`];
+    return t ? { ...a, title: t, original_title: a.title, translated: true } : a;
+  };
   return (
     <div className="flex flex-col gap-3">
-      {data.sources.length > 0 && <FeedHealth sources={data.sources} />}
+      {data.sources.length > 0 && <FeedHealth sources={data.sources} translationFailed={translationFailed} />}
       {items.length === 0 ? (
         <EmptyNote>{data.items.length ? "No stories match your filters." : "No recent news found."}</EmptyNote>
       ) : (
         <div className="flex flex-col">
-          {items.slice(0, shown).map((a) => (
-            <Story key={a.link || a.title} article={a} showTeam={teams.length > 1} showOriginal={prefs.showOriginal} />
+          {visible.map((a) => (
+            <Story key={`${a.team_name}:${a.link || a.title}`} article={shownArticle(a)} showTeam={teams.length > 1} showOriginal={prefs.showOriginal} />
           ))}
         </div>
       )}
