@@ -221,6 +221,62 @@ def test_matches_today_uses_fotmob_when_football_data_has_no_ucl_access(client):
     assert [m["home"] for m in resp.get_json()] == ["FC Bayern München"]
 
 
+def test_matches_today_keys_the_fixture_not_the_provider_id(client):
+    """football-data.org and FotMob number fixtures in different spaces.
+
+    The same Champions League match listed twice, under two ids, is one row.
+    A different match that reuses one of those numbers is still returned.
+    """
+    day = "2026-10-21"
+    listed = dict(
+        make_match("Arsenal FC", "FC Bayern München", 0, 0, day),
+        id=200,
+        competition={"code": "CL"},
+        status="IN_PLAY",
+    )
+    listed["utcDate"] = f"{day}T19:00:00Z"
+    domestic = dict(
+        make_match("Sevilla FC", "Valencia CF", 1, 0, day),
+        id=77,
+        competition={"code": "PD"},
+        status="FINISHED",
+    )
+    domestic["utcDate"] = f"{day}T18:00:00Z"
+    cl_list = dict(
+        make_match("Arsenal FC", "FC Bayern München", 1, 1, day),
+        id=999,
+        competition={"code": "CL"},
+        status="FINISHED",
+    )
+    cl_list["utcDate"] = f"{day}T19:45:00Z"
+    fotmob_other = {
+        "id": 77,
+        "league_code": "CL",
+        "league_name": "Champions League",
+        "home": "Real Madrid",
+        "away": "RB Leipzig",
+        "home_crest": None,
+        "away_crest": None,
+        "home_score": 2,
+        "away_score": 0,
+        "status": "FINISHED",
+        "kickoff": f"{day}T16:00:00Z",
+    }
+
+    with (
+        patch("football_client.requests.get", side_effect=_route_today("", {"domestic": {"matches": [listed, domestic]}, "cl": {"matches": [cl_list]}})),
+        patch("routes.football.champions_league_fixtures", return_value=[fotmob_other]),
+    ):
+        rows = client.get(f"/matches/today?date={day}").get_json()
+
+    pairs = [(m["league_code"], m["home"], m["away"]) for m in rows]
+    assert pairs.count(("CL", "Arsenal FC", "FC Bayern München")) == 1
+    assert ("PD", "Sevilla FC", "Valencia CF") in pairs
+    assert ("CL", "Real Madrid", "RB Leipzig") in pairs
+    assert len(rows) == 3
+    assert [m["id"] for m in rows].count(77) == 2
+
+
 def test_matches_today_rejects_a_bad_date(client):
     resp = client.get("/matches/today?date=21-10-2026")
 
