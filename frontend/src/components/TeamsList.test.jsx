@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { API_BASE } from "../apiBase";
 let TeamsList;
 
 const sampleTeams = [
@@ -23,7 +24,7 @@ describe("TeamsList", () => {
 
     render(<TeamsList league="PD" />, { wrapper: MemoryRouter });
 
-    expect(fetch).toHaveBeenCalledWith("http://127.0.0.1:5001/teams?league=PD");
+    expect(fetch).toHaveBeenCalledWith(`${API_BASE}/teams?league=PD`);
   });
 
   it("renders a card per team", async () => {
@@ -49,6 +50,6 @@ describe("TeamsList", () => {
     const { rerender } = render(<TeamsList league="PD" />, { wrapper: MemoryRouter });
     rerender(<TeamsList league="PL" />);
 
-    expect(fetch).toHaveBeenCalledWith("http://127.0.0.1:5001/teams?league=PL");
+    expect(fetch).toHaveBeenCalledWith(`${API_BASE}/teams?league=PL`);
   });
 });
