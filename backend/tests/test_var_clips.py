@@ -107,3 +107,70 @@ def test_discover_finds_var_offside_reviews_from_commentary_and_attaches_a_named
         result = client.get("/var/discover?league=PD&from=2026-09-04&to=2026-09-04")
     reviews = result.json["reviews"]
     assert [(r["minute"], r["player"], r["outcome"], r["clip"] and r["clip"]["id"]) for r in reviews] == [("87'", "Carlos Esp\u00ed", "goal ruled out", "1")]
+
+
+def test_discover_confirms_a_goal_and_does_not_attach_a_recap_that_names_the_player(client):
+    commentary = [
+        {"text": "Offside, Barcelona. Lamine Yamal is caught offside.", "time": {"displayValue": "64'"}},
+        {"text": "VAR Decision: Goal Barcelona 1-0 Getafe.", "time": {"displayValue": "64'"}},
+        {"text": "Offside, Barcelona. Ferran Torres is caught offside.", "time": {"displayValue": "70'"}},
+        {"text": "GOAL OVERTURNED BY VAR: Ferran Torres (Barcelona) scores but the goal is ruled out after a VAR review.", "time": {"displayValue": "70'"}},
+    ]
+    videos = [
+        {"id": 1, "headline": "Lamine Yamal highlights", "duration": 90, "links": {"source": {"href": "https://espnmedia-cdn.akamaized.net/1.mp4"}}},
+        {"id": 2, "headline": "Yamal goal checked by the officials", "duration": 40, "links": {"source": {"href": "https://espnmedia-cdn.akamaized.net/2.mp4"}}},
+        {"id": 3, "headline": "Ferran Torres highlights", "duration": 80, "links": {"source": {"href": "https://espnmedia-cdn.akamaized.net/3.mp4"}}},
+    ]
+
+    def fake_get(url, params=None, timeout=None):
+        if url.endswith("/scoreboard"):
+            return response({"events": [{"id": "9", "name": "Getafe at Barcelona", "competitions": [{"status": {"type": {"state": "post"}}}]}]})
+        return response({"videos": videos, "commentary": commentary})
+
+    with patch("routes.var_clips.requests.get", side_effect=fake_get):
+        result = client.get("/var/discover?league=PD&from=2026-03-01&to=2026-03-01")
+
+    assert result.status_code == 200
+    assert [(r["minute"], r["player"], r["outcome"], r["clip"] and r["clip"]["id"]) for r in result.json["reviews"]] == [
+        ("64'", "Lamine Yamal", "goal confirmed", "2"),
+        ("70'", "Ferran Torres", "goal ruled out", None),
+    ]
+
+
+def test_discover_kind_drops_recaps_and_a_failed_event_does_not_drop_the_day(client):
+    def video(i, title, seconds):
+        return {"id": i, "headline": title, "duration": seconds, "links": {"source": {"href": f"https://espnmedia-cdn.akamaized.net/{i}.mp4"}}}
+
+    def fake_get(url, params=None, timeout=None):
+        if url.endswith("/scoreboard"):
+            return response({"events": [
+                {"id": "1", "name": "Unavailable", "competitions": [{"status": {"type": {"state": "post"}}}]},
+                {"id": "2", "name": "Kept", "competitions": [{"status": {"type": {"state": "post"}}}]},
+                {"id": "live", "name": "Live", "competitions": [{"status": {"type": {"state": "in"}}}]},
+            ]})
+        if (params or {}).get("event") == "1":
+            raise requests.Timeout("slow")
+        return response({
+            "videos": [
+                video(1, "Goal wiped off by VAR", 40),
+                video(2, "Sent off for a reckless challenge", 50),
+                video(3, "Match highlights", 90),
+                video(4, "Great save", 30),
+            ],
+            "commentary": [
+                {"text": "Offside, Home. Striker is caught offside.", "time": {"displayValue": "12'"}},
+                {"text": "VAR Decision: No Goal.", "time": {"displayValue": "12'"}},
+            ],
+        })
+
+    with patch("routes.var_clips.requests.get", side_effect=fake_get):
+        everything = client.get("/var/discover?league=PD&from=2026-03-01&to=2026-03-01&kind=all")
+        fouls = client.get("/var/discover?league=PD&from=2026-03-01&to=2026-03-01&kind=foul")
+
+    assert everything.status_code == 200
+    assert everything.json["events_failed"] == 1
+    assert [(c["id"], c["kind"]) for c in everything.json["clips"]] == [("2", "foul"), ("1", "offside"), ("4", "other")]
+    assert [(r["event"], r["outcome"], r["player"]) for r in everything.json["reviews"]] == [("2", "goal ruled out", "Striker")]
+    assert fouls.json["events_failed"] == 1
+    assert [(c["id"], c["kind"]) for c in fouls.json["clips"]] == [("2", "foul")]
+    assert fouls.json["reviews"] == []

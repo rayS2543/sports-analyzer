@@ -221,6 +221,60 @@ def test_matches_today_uses_fotmob_when_football_data_has_no_ucl_access(client):
     assert [m["home"] for m in resp.get_json()] == ["FC Bayern München"]
 
 
+def test_matches_today_collapses_one_fixture_when_provider_ids_differ(client):
+    """football-data's combined feed, its UCL feed, and FotMob use different ids for one match."""
+    domestic = dict(
+        make_match("FC Bayern München", "Arsenal FC", None, None, "2026-10-21"),
+        competition={"code": "CL"},
+        status="TIMED",
+        id=111,
+    )
+    domestic["utcDate"] = "2026-10-21T16:00:00Z"
+    other = dict(
+        make_match("Sevilla", "Valencia", None, None, "2026-10-21"),
+        competition={"code": "PD"},
+        status="TIMED",
+        id=222,
+    )
+    other["utcDate"] = "2026-10-21T18:00:00Z"
+    dedicated = dict(
+        make_match("Bayern München", "Arsenal", 1, 0, "2026-10-21"),
+        status="IN_PLAY",
+        id=999,
+    )
+    dedicated["utcDate"] = "2026-10-21T19:00:00Z"
+    fotmob = {
+        "id": 6106238,
+        "league_code": "CL",
+        "league_name": "Champions League",
+        "home": "Bayern München",
+        "away": "Arsenal",
+        "home_crest": None,
+        "away_crest": None,
+        "home_score": 2,
+        "away_score": 2,
+        "status": "FINISHED",
+        "kickoff": "2026-10-21T19:00:00Z",
+    }
+
+    with (
+        patch(
+            "football_client.requests.get",
+            side_effect=_route_today("", {"domestic": {"matches": [domestic, other]}, "cl": {"matches": [dedicated]}}),
+        ),
+        patch("routes.football.champions_league_fixtures", return_value=[fotmob]),
+    ):
+        resp = client.get("/matches/today?date=2026-10-21")
+
+    assert resp.status_code == 200
+    assert [
+        (m["home"], m["away"], m["id"], m["home_score"], m["status"], m["league_code"]) for m in resp.get_json()
+    ] == [
+        ("Sevilla", "Valencia", 222, None, "TIMED", "PD"),
+        ("Bayern München", "Arsenal", 999, 1, "IN_PLAY", "CL"),
+    ]
+
+
 def test_matches_today_rejects_a_bad_date(client):
     resp = client.get("/matches/today?date=21-10-2026")
 
@@ -632,6 +686,25 @@ def test_form_is_built_from_matches_persisted_by_a_prior_fetch(client):
     assert data["points"] == 4
 
 
+def test_refetched_score_replaces_the_persisted_result(client):
+    import cache
+
+    first = {"matches": [make_match("Real Madrid", "Barcelona", 1, 0, "2024-01-05")]}
+    corrected = {"matches": [make_match("Real Madrid", "Barcelona", 0, 2, "2024-01-05")]}
+
+    with patch("football_client.requests.get", return_value=FakeResponse(first)):
+        client.get("/matches")
+    cache.clear()
+    with patch("football_client.requests.get", return_value=FakeResponse(corrected)):
+        client.get("/matches")
+
+    data = client.get("/analytics/form/Real Madrid").get_json()
+    assert data["form"] == "L"
+    assert data["points"] == 0
+    assert data["matches"][0]["score"] == "0 - 2"
+    assert data["matches"][0]["winner"] == "Barcelona"
+
+
 def test_form_respects_the_limit_query_param(client):
     payload = {
         "matches": [
@@ -775,3 +848,66 @@ def test_team_detail_returns_roster_form_and_fixtures(client):
     form_resp = client.get("/analytics/form/Real%20Madrid%20CF?league=PD")
     assert form_resp.status_code == 200
     assert form_resp.get_json()["form"] == "W"
+
+
+def test_team_detail_resolves_short_name_and_keeps_other_competitions_out_of_league_form(client):
+    teams_payload = {
+        "teams": [
+            {
+                "id": 86,
+                "name": "Real Madrid CF",
+                "shortName": "Real Madrid",
+                "tla": "RMA",
+                "crest": "https://crests.example/rma.png",
+            }
+        ]
+    }
+    detail_payload = {
+        "id": 86,
+        "name": "Real Madrid CF",
+        "shortName": "Real Madrid",
+        "tla": "RMA",
+        "crest": "https://crests.example/rma.png",
+        "squad": [],
+    }
+    league_match = make_match("Real Madrid CF", "Barcelona", 2, 1, "2024-01-10")
+    league_match["competition"] = {"code": "PD"}
+    unlabeled = make_match("Sevilla", "Real Madrid CF", 1, 1, "2024-01-12")
+    ucl_match = make_match("Manchester City", "Real Madrid CF", 3, 0, "2024-01-17")
+    ucl_match["competition"] = {"code": "CL"}
+
+    def fake_get(url, headers=None, params=None, timeout=10):
+        if url.endswith("/competitions/PD/teams"):
+            return FakeResponse(teams_payload)
+        if url.endswith("/teams/86"):
+            return FakeResponse(detail_payload)
+        if url.endswith("/teams/86/matches"):
+            if params and params.get("status") == "FINISHED":
+                return FakeResponse({"matches": [league_match, unlabeled, ucl_match]})
+            return FakeResponse({"matches": []})
+        if url.endswith("/competitions/PD/standings"):
+            return FakeResponse({"standings": []})
+        raise AssertionError(f"Unexpected URL {url}")
+
+    with patch("football_client.requests.get", side_effect=fake_get):
+        resp = client.get("/teams/detail?league=PD&name=Real%20Madrid")
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["name"] == "Real Madrid CF"
+    assert [(m["home"], m["away"], m["competition"]) for m in data["recent_matches"]] == [
+        ("Manchester City", "Real Madrid CF", "CL"),
+        ("Sevilla", "Real Madrid CF", None),
+        ("Real Madrid CF", "Barcelona", "PD"),
+    ]
+    # The profile string follows every match shown, including other competitions.
+    assert data["form"] == "LDW"
+    assert data["form_points"] == 4
+
+    form = client.get("/analytics/form/Real%20Madrid%20CF?league=PD").get_json()
+    assert form["form"] == "DW"
+    assert form["points"] == 4
+    assert [(m["home"], m["score"]) for m in form["matches"]] == [
+        ("Sevilla", "1 - 1"),
+        ("Real Madrid CF", "2 - 1"),
+    ]
