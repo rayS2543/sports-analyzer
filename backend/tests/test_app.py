@@ -227,6 +227,48 @@ def test_matches_today_rejects_a_bad_date(client):
     assert resp.status_code == 400
     assert resp.get_json()["error"] == "date must be YYYY-MM-DD"
 
+    with patch("football_client.requests.get") as upstream:
+        assert client.get("/matches/today?date=2026-02-30").status_code == 400
+    upstream.assert_not_called()
+
+
+def test_matches_today_drops_rows_that_are_not_a_named_club_in_a_known_league(client):
+    good = dict(make_match("Sevilla", "Valencia", 1, 0, "2026-10-12"), competition={"code": "PD"}, status="FINISHED")
+    blank = dict(make_match("", "Valencia", 1, 0, "2026-10-12"), competition={"code": "PD"}, status="FINISHED")
+    unknown = dict(make_match("Mystery FC", "Other", 1, 0, "2026-10-12"), competition={"code": "ZZ"}, status="FINISHED")
+    unlabeled = dict(make_match("Athletic Club", "Levante", 0, 0, "2026-10-12"), status="TIMED")
+
+    with (
+        patch("football_client.requests.get", side_effect=_route_today("", {"domestic": {"matches": [good, blank, unknown, unlabeled]}})),
+        patch("routes.football.champions_league_fixtures", return_value=[]),
+    ):
+        rows = client.get("/matches/today?date=2026-10-12").get_json()
+
+    assert [(m["home"], m["away"]) for m in rows] == [("Sevilla", "Valencia")]
+
+
+def test_matches_today_keeps_domestic_fixtures_when_fotmob_fails(client):
+    from fotmob_client import FotMobError
+
+    pd = dict(make_match("Sevilla", "Valencia", 1, 0, "2026-10-12"), competition={"code": "PD"}, status="FINISHED")
+    with (
+        patch("football_client.requests.get", side_effect=_route_today("", {"domestic": {"matches": [pd]}})),
+        patch("routes.football.champions_league_fixtures", side_effect=FotMobError("FotMob is down")),
+    ):
+        resp = client.get("/matches/today?date=2026-10-12")
+
+    assert resp.status_code == 200
+    assert [m["home"] for m in resp.get_json()] == ["Sevilla"]
+
+    with (
+        patch("football_client.requests.get", side_effect=_route_today("", {"status": {"domestic": 429, "cl": 403}})),
+        patch("routes.football.champions_league_fixtures", side_effect=FotMobError("FotMob is down")),
+    ):
+        failed = client.get("/matches/today?date=2026-10-13")
+
+    assert failed.status_code == 429
+    assert "rate limit" in failed.get_json()["error"]
+
 
 def test_matches_today_surfaces_upstream_errors(client):
     with (
@@ -407,6 +449,22 @@ def test_concurrent_identical_requests_share_one_upstream_call(client):
             t.join()
 
     assert upstream.call_count == 1
+
+
+def test_upstream_failure_is_not_cached(client):
+    calls = {"n": 0}
+
+    def fake_get(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeResponse({}, status_code=429)
+        return FakeResponse({"standings": [{"type": "TOTAL", "table": []}]})
+
+    with patch("football_client.requests.get", side_effect=fake_get):
+        assert client.get("/standings?league=SA").status_code == 429
+        assert client.get("/standings?league=SA").status_code == 200
+
+    assert calls["n"] == 2
 
 
 def test_predictions_picks_higher_rated_team_as_winner(client):
@@ -775,3 +833,61 @@ def test_team_detail_returns_roster_form_and_fixtures(client):
     form_resp = client.get("/analytics/form/Real%20Madrid%20CF?league=PD")
     assert form_resp.status_code == 200
     assert form_resp.get_json()["form"] == "W"
+
+
+def test_team_detail_orders_the_squad_and_reads_the_total_table(client):
+    teams_payload = {
+        "teams": [
+            {
+                "id": 86,
+                "name": "Real Madrid CF",
+                "shortName": "Real Madrid",
+                "tla": "RMA",
+                "crest": "https://crests.example/rma.png",
+            }
+        ]
+    }
+    detail_payload = {
+        "name": "Real Madrid CF",
+        "coach": {"nationality": "Italy"},
+        "squad": [
+            {"id": 7, "name": "Vinicius Junior", "position": "Offence", "shirtNumber": 7},
+            {"id": 1, "name": "Courtois", "position": "Goalkeeper", "shirtNumber": 1},
+            {"id": 10, "name": "Modric", "position": "Midfield", "shirtNumber": 10},
+            {"id": 8, "name": "Valverde", "position": "Midfield", "shirtNumber": 8},
+            {"id": 99, "name": "Trialist", "position": "Midfield", "shirtNumber": None},
+            {"id": 40, "name": "Staff", "position": "Coach", "shirtNumber": 40},
+        ],
+    }
+    standings_payload = {
+        "standings": [
+            {"type": "HOME", "table": [{"position": 9, "team": {"name": "Real Madrid CF"}, "points": 20}]},
+            {"type": "TOTAL", "table": [{"position": 2, "team": {"name": "Real Madrid CF"}, "points": 45}]},
+        ]
+    }
+
+    def fake_get(url, headers=None, params=None, timeout=10):
+        if url.endswith("/competitions/PD/teams"):
+            return FakeResponse(teams_payload)
+        if url.endswith("/teams/86"):
+            return FakeResponse(detail_payload)
+        if url.endswith("/teams/86/matches"):
+            return FakeResponse({"matches": []})
+        if url.endswith("/competitions/PD/standings"):
+            return FakeResponse(standings_payload)
+        raise AssertionError(f"Unexpected URL {url}")
+
+    with patch("football_client.requests.get", side_effect=fake_get):
+        data = client.get("/teams/detail?league=PD&name=Real%20Madrid%20CF").get_json()
+
+    assert data["coach"] is None
+    assert data["standing"]["position"] == 2
+    assert data["standing"]["points"] == 45
+    assert [(p["name"], p["shirtNumber"]) for p in data["squad"]] == [
+        ("Courtois", 1),
+        ("Valverde", 8),
+        ("Modric", 10),
+        ("Trialist", None),
+        ("Vinicius Junior", 7),
+        ("Staff", 40),
+    ]
