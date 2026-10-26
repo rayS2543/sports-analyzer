@@ -20,12 +20,21 @@ function Delta({ value }) {
   );
 }
 
-export default function EloRatingsTable({ league, compact = false }) {
-  const [payload, setPayload] = useState(null);
+export default function EloRatingsTable({ league, compact = false, initialPayload }) {
+  const [payload, setPayload] = useState(initialPayload ?? null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
     if (!league) return;
+    if (initialPayload !== undefined) {
+      if (initialPayload !== null) {
+        setPayload(initialPayload);
+      } else {
+        setPayload(null);
+      }
+      return;
+    }
+
     setError(null);
     setPayload(null);
     fetch(`${API_BASE}/ratings?league=${league}`)
@@ -43,7 +52,7 @@ export default function EloRatingsTable({ league, compact = false }) {
         setError("Could not reach the Elo service.");
         setPayload({ ratings: [] });
       });
-  }, [league]);
+  }, [league, initialPayload]);
 
   const rows = payload?.ratings ?? null;
   const visible = compact && rows ? rows.slice(0, 8) : rows;

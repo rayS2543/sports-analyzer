@@ -10,7 +10,9 @@ from routes.news import news_bp
 from routes.players import players_bp
 from routes.predictions import predictions_bp
 from routes.var_analysis import var_analysis_bp
+from routes.var_checks import var_checks_bp
 from routes.var_clips import var_clips_bp
+from routes.var_uploads import var_uploads_bp
 from routes.var_fouls import var_fouls_bp
 
 load_dotenv()
@@ -39,6 +41,8 @@ def create_app():
     app.register_blueprint(analytics_bp)
     app.register_blueprint(var_clips_bp)
     app.register_blueprint(var_analysis_bp)
+    app.register_blueprint(var_uploads_bp)
+    app.register_blueprint(var_checks_bp)
     app.register_blueprint(var_fouls_bp)
 
     return app

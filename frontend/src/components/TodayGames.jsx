@@ -97,14 +97,25 @@ function TileSkeleton() {
   );
 }
 
-export default function TodayGames() {
-  const [matches, setMatches] = useState([]);
+export default function TodayGames({ initialMatches }) {
+  const isManaged = initialMatches !== undefined;
+  const [matches, setMatches] = useState(initialMatches || []);
   const [error, setError] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(isManaged ? !initialMatches : true);
   const [selectedLeagues, setSelectedLeagues] = useState([]);
   const [today] = useState(localISODate);
 
   useEffect(() => {
+    if (initialMatches !== undefined) {
+      if (initialMatches !== null) {
+        setMatches(initialMatches);
+        setLoading(false);
+      } else {
+        setLoading(true);
+      }
+      return;
+    }
+
     setLoading(true);
     fetch(`${API_BASE}/matches/today?date=${today}`)
       .then((res) => res.json())
@@ -121,7 +132,7 @@ export default function TodayGames() {
         setError("Could not reach the backend");
       })
       .finally(() => setLoading(false));
-  }, [today]);
+  }, [today, initialMatches]);
 
   const visible = selectedLeagues.length === 0 ? matches : matches.filter((m) => selectedLeagues.includes(m.league_code));
   const liveCount = matches.filter((m) => LIVE_STATUSES.has(m.status)).length;

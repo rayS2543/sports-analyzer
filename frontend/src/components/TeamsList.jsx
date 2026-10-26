@@ -4,11 +4,20 @@ import { Link } from "react-router-dom";
 import TeamBadge from "./TeamBadge";
 import { ErrorNote, Section } from "./ui";
 
-export default function TeamsList({ league }) {
-  const [teams, setTeams] = useState([]);
+export default function TeamsList({ league, initialTeams }) {
+  const [teams, setTeams] = useState(initialTeams || []);
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    if (initialTeams !== undefined) {
+      if (initialTeams !== null) {
+        setTeams(initialTeams);
+      } else {
+        setTeams([]);
+      }
+      return;
+    }
+
     setError(null);
     getTeams(league)
       .then((data) => {
@@ -24,7 +33,7 @@ export default function TeamsList({ league }) {
         setTeams([]);
         setError(err.message || "Could not reach the backend");
       });
-  }, [league]);
+  }, [league, initialTeams]);
 
   return (
     <Section title="Clubs" aside={teams.length > 0 ? `${teams.length} teams` : null}>

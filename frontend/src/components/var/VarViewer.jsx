@@ -5,6 +5,7 @@ import PitchScene from "./PitchScene";
 import ReviewPanel from "./ReviewPanel";
 import VideoOverlay from "./VideoOverlay";
 import { OfficialRecord, VERDICT_STYLE, VerdictCard } from "./VerdictCard";
+import IfabRuleAssistant from "./IfabRuleAssistant";
 import { formatClock, frameAt, nearestCalibratedTime, personColors, personKey, personLabel, stepFrameTime } from "./varMath";
 
 const FoulReview = lazy(() => import("./FoulReview"));
@@ -818,9 +819,13 @@ export default function VarViewer({ analysis, clipId, clipMeta, league, event, o
           </div>
         </section>
         <div className="flex flex-col gap-6">
-          {/* Foul verdicts render inside the foul panel; the offside card would only be noise there. */}
-          {tab === "foul" ? null : assessment ? (
-            <VerdictCard result={assessment} />
+          {tab === "foul" ? (
+            <IfabRuleAssistant mode="law12" incident={{ sanction: "red", verdict: "red" }} />
+          ) : assessment ? (
+            <>
+              <VerdictCard result={assessment} />
+              <IfabRuleAssistant mode="law11" assessment={assessment} />
+            </>
           ) : (
             <section className="rounded-xl border border-line bg-surface p-5 flex flex-col gap-2">
               <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted">System assessment</h3>

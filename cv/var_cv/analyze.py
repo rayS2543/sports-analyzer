@@ -276,6 +276,16 @@ def assign_tracks(recs, tracked, model):
             for x, w in clear:
                 votes[model.predict(x)] += w
             team[tid], score[tid] = teams.decisive(votes)
+    # a keeper whose shirt is nearer one team's colours than the other's is no single crop's 'odd kit', but his shirt is
+    # far from his team's outfielders': by the goal he is the keeper, anywhere else his team is unknown
+    for tid in teams.kit_outliers({t: [x[0] for x in f] for t, f in feats.items()}, team):
+        if role[tid] != "player":
+            continue
+        p = np.mean(pos[tid], axis=0) if tid in pos else None
+        if p is not None and near_goal(*p):
+            role[tid] = "goalkeeper"
+        else:
+            team[tid], score[tid] = None, 0.0
     gk_votes = {}
     for rec, pairs in zip(recs, tracked):  # keepers: nearest team block along the pitch (image x if uncalibrated)
         H = rec["cal"]["H"] if rec["cal"]["ok"] else None
@@ -483,7 +493,8 @@ def run(args):
 def parse(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--clip-id", required=True)
-    ap.add_argument("--source-url", required=True)
+    ap.add_argument("--source-url", default="", help="ESPN CDN MP4 to download when --video does not exist yet")
+    ap.add_argument("--local", action="store_true", help="--video is a file the user uploaded: no download, no source URL")
     ap.add_argument("--video", help="shared per-clip video path (default: <out>/../video.mp4)")
     ap.add_argument("--start", type=float, required=True, help="window start, seconds of source time")
     ap.add_argument("--end", type=float, required=True, help="window end, seconds of source time")
@@ -509,7 +520,11 @@ def main(argv=None):
             raise UserError(f"window must satisfy 0 <= start < end and end - start <= {MAX_WINDOW_S:g}s")
         if not (90 <= args.pitch[0] <= 120 and 45 <= args.pitch[1] <= 90):
             raise UserError("pitch dimensions outside IFAB limits (90-120 m x 45-90 m)")
-        check_url(args.source_url)
+        if args.local:
+            if not (args.video and Path(args.video).is_file()):
+                raise UserError("the uploaded video is missing")
+        else:
+            check_url(args.source_url)
         run(args)
     except Exception as e:  # report every failure to the backend, never a half-written analysis
         Path(args.out).mkdir(parents=True, exist_ok=True)

@@ -137,6 +137,32 @@ def decisive(votes):
     return (team if w >= KIT_SHARE * total else None), w / total
 
 
+OUTLIER_MIN_TRACKS = 4  # tracks a team needs before one can be called unlike the rest
+OUTLIER_MIN_CROPS = 12  # a keeper stays in view; a short fragment of a blurred or half-hidden outfielder does not
+OUTLIER_FLOOR = 0.4     # a track's mean kit signature must be at least this far (Hellinger) from its team's median ...
+OUTLIER_SPREAD = 3.0    # ... this many times the usual distance of the team's tracks ...
+OUTLIER_LONE = 1.5      # ... and this many times the next-furthest track's: one clear exception, not several odd ones
+
+
+def kit_outliers(track_features, team_of):
+    """Tracks whose kit is unlike the rest of their team's, at most one per team: {track id}. A goalkeeper in a black or
+    neon shirt is nearer one team's colours than the other's, so no single crop looks 'odd', yet his shirt is far from
+    every outfield player's on that team. track_features: {track id: [signature, ...]}; team_of: {track id: 'A'/'B'/None}."""
+    mean = {t: np.mean(fs, axis=0) for t, fs in track_features.items() if len(fs) >= OUTLIER_MIN_CROPS and team_of.get(t)}
+    out = set()
+    for team in "AB":
+        ids = [t for t in mean if team_of[t] == team]
+        if len(ids) < OUTLIER_MIN_TRACKS:
+            continue
+        centre = np.median([mean[t] for t in ids], axis=0)
+        gap = sorted(((float(np.linalg.norm(mean[t] - centre)), t) for t in ids), reverse=True)
+        usual = float(np.median([g for g, _ in gap]))
+        top, runner_up = gap[0][0], gap[1][0]
+        if top >= OUTLIER_FLOOR and top >= OUTLIER_SPREAD * max(usual, 1e-6) and top >= OUTLIER_LONE * max(runner_up, 1e-6):
+            out.add(gap[0][1])
+    return out
+
+
 def cap_per_frame(players, min_sep_m=0.5):
     """Enforce football's head count on one frame's player dicts; returns the kept list.
 

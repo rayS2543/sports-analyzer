@@ -10,12 +10,21 @@ function resultOf(m) {
   return m.winner === m.home ? "home" : "away";
 }
 
-export default function MatchesTable({ league, leagueName }) {
-  const [matches, setMatches] = useState(null);
+export default function MatchesTable({ league, leagueName, initialMatches }) {
+  const [matches, setMatches] = useState(initialMatches ?? null);
   const [error, setError] = useState(null);
   const navigate = useNavigate();
 
   useEffect(() => {
+    if (initialMatches !== undefined) {
+      if (initialMatches !== null) {
+        setMatches(initialMatches);
+      } else {
+        setMatches(null);
+      }
+      return;
+    }
+
     setError(null);
     setMatches(null);
     fetch(`${API_BASE}/matches?league=${league}`)
@@ -33,7 +42,7 @@ export default function MatchesTable({ league, leagueName }) {
         setMatches([]);
         setError("Could not reach the backend");
       });
-  }, [league]);
+  }, [league, initialMatches]);
 
   return (
     <Section title="Recent results">

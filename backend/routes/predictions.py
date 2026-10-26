@@ -36,30 +36,20 @@ def _finished_in_window(league, days=RATING_WINDOW_DAYS):
     return matches, today
 
 
-@predictions_bp.route("/predictions")
-def get_predictions():
-    league = request.args.get("league", DEFAULT_LEAGUE)
-    league, err = _league_or_400(league)
-    if err:
-        return err
-
-    try:
-        finished_matches, today = _finished_in_window(league)
-        upcoming_data = get(
-            "/matches",
-            params={
-                "competitions": league,
-                # football-data.org marks a fixture TIMED once its kickoff time
-                # is confirmed, which is true for most matches within the next
-                # 10 days - SCHEDULED alone (no confirmed time yet) misses them.
-                "status": "SCHEDULED,TIMED",
-                "dateFrom": today.isoformat(),
-                "dateTo": (today + timedelta(days=10)).isoformat(),
-            },
-        )
-    except FootballDataError as e:
-        return jsonify({"error": e.message}), e.status_code
-
+def compute_predictions_for_league(league):
+    finished_matches, today = _finished_in_window(league)
+    upcoming_data = get(
+        "/matches",
+        params={
+            "competitions": league,
+            # football-data.org marks a fixture TIMED once its kickoff time
+            # is confirmed, which is true for most matches within the next
+            # 10 days - SCHEDULED alone (no confirmed time yet) misses them.
+            "status": "SCHEDULED,TIMED",
+            "dateFrom": today.isoformat(),
+            "dateTo": (today + timedelta(days=10)).isoformat(),
+        },
+    )
     state = compute_ratings(finished_matches)
     upcoming_matches = upcoming_data.get("matches", [])
 
@@ -81,6 +71,44 @@ def get_predictions():
         )
 
     predictions.sort(key=lambda p: p["date"])
+    return predictions
+
+
+def compute_ratings_for_league(league, finished_matches=None):
+    if finished_matches is None:
+        finished_matches, _today = _finished_in_window(league)
+
+    state = compute_ratings(finished_matches)
+    table = ranked_table(state)
+
+    return {
+        "league": league,
+        "window_days": RATING_WINDOW_DAYS,
+        "matches_used": len(finished_matches),
+        "model": {
+            "initial": INITIAL,
+            "k": K,
+            "home_advantage": HOME_ADVANTAGE,
+            "draw_base": DRAW_BASE,
+            "includes_draw": True,
+            "margin_of_victory": True,
+        },
+        "ratings": table,
+    }
+
+
+@predictions_bp.route("/predictions")
+def get_predictions():
+    league = request.args.get("league", DEFAULT_LEAGUE)
+    league, err = _league_or_400(league)
+    if err:
+        return err
+
+    try:
+        predictions = compute_predictions_for_league(league)
+    except FootballDataError as e:
+        return jsonify({"error": e.message}), e.status_code
+
     return jsonify(predictions)
 
 
@@ -93,26 +121,8 @@ def get_ratings():
         return err
 
     try:
-        finished_matches, _today = _finished_in_window(league)
+        ratings = compute_ratings_for_league(league)
     except FootballDataError as e:
         return jsonify({"error": e.message}), e.status_code
 
-    state = compute_ratings(finished_matches)
-    table = ranked_table(state)
-
-    return jsonify(
-        {
-            "league": league,
-            "window_days": RATING_WINDOW_DAYS,
-            "matches_used": len(finished_matches),
-            "model": {
-                "initial": INITIAL,
-                "k": K,
-                "home_advantage": HOME_ADVANTAGE,
-                "draw_base": DRAW_BASE,
-                "includes_draw": True,
-                "margin_of_victory": True,
-            },
-            "ratings": table,
-        }
-    )
+    return jsonify(ratings)

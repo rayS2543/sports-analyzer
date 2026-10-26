@@ -10,7 +10,7 @@ from flask import Blueprint, jsonify, request
 from cache import cached
 
 var_clips_bp = Blueprint("var_clips", __name__)
-ESPN_LEAGUES = {"PD": "esp.1", "PL": "eng.1", "SA": "ita.1", "BL1": "ger.1", "FL1": "fra.1"}
+ESPN_LEAGUES = {"PD": "esp.1", "PL": "eng.1", "SA": "ita.1", "BL1": "ger.1", "FL1": "fra.1", "CL": "uefa.champions"}
 BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer"
 
 
@@ -49,20 +49,72 @@ def clip_list(league, event_id):
     return result
 
 
+VIDEO_API = "https://api-app.espn.com/v1/video/clips"
+ESPN_PAGE_HOSTS = {"www.espn.com", "espn.com"}
+LINK_ID = re.compile(r"(?:[?&]id=|/id/)(\d{5,10})(?:\D|$)")
+
+
+def clip_id_from(text):
+    """The ESPN video id in a bare id or an espn.com video/watch link, else None."""
+    text = (text or "").strip()
+    if re.fullmatch(r"\d{5,10}", text):
+        return text
+    try:
+        parsed = urlsplit(text)
+    except ValueError:
+        return None
+    if parsed.scheme in ("http", "https") and parsed.hostname in ESPN_PAGE_HOSTS and re.search(r"/(?:video|watch)/", parsed.path):
+        found = LINK_ID.search(parsed.path + "?" + parsed.query)
+        return found.group(1) if found else None
+    return None
+
+
+@cached(ttl_seconds=900)
+def espn_clip(clip_id):
+    """One ESPN video by id, from ESPN's own video API (the id picks the video; the host is fixed), or None."""
+    response = requests.get(f"{VIDEO_API}/{clip_id}", timeout=15)
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    payload = response.json()
+    video = next((v for v in (payload.get("videos") or []) if str(v.get("id")) == clip_id), None) if isinstance(payload, dict) else None
+    links = (video or {}).get("links") or {}
+    source = _https_url((links.get("source") or {}).get("href"), {"espnmedia-cdn.akamaized.net"})
+    if not video or not source:
+        return None
+    return {"id": clip_id, "title": video.get("headline"), "duration_seconds": video.get("duration"), "source_url": source,
+            "page_url": _https_url((links.get("web") or {}).get("href"), ESPN_PAGE_HOSTS)}
+
+
+@var_clips_bp.get("/var/clip")
+def clip_by_link():
+    """Look up a single ESPN video from a pasted link or id, so it needs no match."""
+    clip_id = clip_id_from(request.args.get("link", ""))
+    if not clip_id:
+        return jsonify(error="Paste an ESPN video link (espn.com/watch/... or espn.com/video/...) or the numeric video ID"), 400
+    try:
+        clip = espn_clip(clip_id)
+    except (requests.RequestException, ValueError, TypeError, KeyError, AttributeError):
+        return jsonify(error="Could not reach ESPN"), 502
+    return (jsonify(clip=clip), 200) if clip else (jsonify(error="ESPN has no downloadable video with that ID"), 404)
+
+
 MAX_DISCOVER_DAYS = 14
 HIGHLIGHT_SECONDS = 120  # a longer clip is a recap, not one incident
 KINDS = (  # first match wins; the headline is only a hint, never evidence of what the footage shows
     ("highlights", re.compile(r"highlights?|recap|every goal|all goals|full match|preview|press conference|reaction", re.I)),
     ("offside", re.compile(r"offside|ruled out|disallow|chalked off|wiped off|cancelled|overturn|var (?:review|check|decision)|denied by var", re.I)),
+    ("goal", re.compile(r"(?:scores|finds the back of the net|gets on the scoresheet|slots? (?:home|in)|doubles|equali[sz]|opens the scoring|restores|strikes first|puts \w+ ahead|(?:stunning|spectacular|brilliant|stunner|screamer)|nods|volley|tap-in)", re.I)),
     ("foul", re.compile(r"sent off|red card|straight red|dismiss|reckless|dangerous (?:tackle|challenge)", re.I)),
 )
 
 
 def classify(title, duration):
-    """'highlights' | 'offside' | 'foul' | 'other' from the headline and length alone."""
+    """'highlights' | 'offside' | 'goal' | 'foul' | 'other' from the headline and length alone."""
     if isinstance(duration, (int, float)) and duration > HIGHLIGHT_SECONDS:
         return "highlights"
-    return next((kind for kind, pattern in KINDS if pattern.search(title or "")), "other")
+    kind = next((kind for kind, pattern in KINDS if pattern.search(title or "")), "other")
+    return "other" if kind == "goal" and re.search(r"penalt", title or "", re.I) else kind  # a penalty has no offside to check
 
 
 OVERTURNED = re.compile(r"goal overturned by var|ruled out after a var review|var decision: no goal", re.I)
@@ -100,8 +152,38 @@ def var_incidents(league, event_id, clips_of_event):
         surname = _plain(slot["player"]).split()[-1] if slot["player"] else ""
         clip = next((c for c in clips_of_event if surname and surname in _plain(c["title"]) and c["source_url"]
                      and (c["duration_seconds"] or 0) <= HIGHLIGHT_SECONDS and classify(c["title"], c["duration_seconds"]) != "highlights"), None)
-        found.append(dict(slot, outcome="goal ruled out" if slot["overturned"] else "goal confirmed", clip=clip))
+        reel = next((c for c in clips_of_event if c["source_url"] and (c["duration_seconds"] or 0) <= HIGHLIGHT_SECONDS
+                     and re.search(r"highlights?", c["title"] or "", re.I)), None)  # a short reel usually shows the goals, ruled out or not
+        found.append(dict(slot, outcome="goal ruled out" if slot["overturned"] else "goal confirmed", clip=clip, highlights=None if clip else reel))
     return found
+
+
+def find_clips(league, first, last, kind):
+    """(clips, reviews, events_failed) for a league's finished matches between two dates (see discover). Raises
+    requests.RequestException / ValueError / TypeError / KeyError / AttributeError when ESPN's fixtures cannot be read."""
+    found, reviews, failed = [], [], 0
+    for offset in range((last - first).days + 1):
+        day = (first + timedelta(days=offset)).isoformat()
+        for event in _get(league, "scoreboard", dates=day.replace("-", "")).get("events", []):
+            competition = (event.get("competitions") or [{}])[0]
+            if (competition.get("status") or {}).get("type", {}).get("state") != "post":
+                continue
+            try:
+                clips_of_event = clip_list(league, event["id"])
+            except (requests.RequestException, ValueError, TypeError, KeyError, AttributeError):
+                failed += 1
+                continue
+            for review in var_incidents(league, event["id"], clips_of_event):
+                if review["offside"] and kind in ("offside", "all"):
+                    reviews.append(dict(review, event=event["id"], match=event.get("name"), date=day))
+            for clip in clips_of_event:
+                tag = classify(clip["title"], clip["duration_seconds"])
+                if clip["source_url"] and (tag == kind or (kind == "all" and tag != "highlights")):
+                    found.append(dict(clip, kind=tag, event=event["id"], match=event.get("name"), date=day))
+    found.sort(key=lambda c: (c["date"], c["duration_seconds"] or 0), reverse=True)
+    reviews.sort(key=lambda r: r["date"], reverse=True)
+    reviews.sort(key=lambda r: r["clip"] is None)  # stable: clips first, newest first within each group
+    return found, reviews, failed
 
 
 @var_clips_bp.get("/var/discover")
@@ -114,33 +196,12 @@ def discover():
         first, last = date.fromisoformat(start), date.fromisoformat(end)
     except ValueError:
         return jsonify(error="from and to must be valid YYYY-MM-DD dates"), 400
-    if league not in ESPN_LEAGUES or kind not in ("offside", "foul", "all") or not 0 <= (last - first).days < MAX_DISCOVER_DAYS:
-        return jsonify(error=f"A supported league, kind (offside, foul, all) and a range of at most {MAX_DISCOVER_DAYS} days are required"), 400
-    found, reviews, failed = [], [], 0
+    if league not in ESPN_LEAGUES or kind not in ("offside", "foul", "goal", "all") or not 0 <= (last - first).days < MAX_DISCOVER_DAYS:
+        return jsonify(error=f"A supported league, kind (offside, foul, goal, all) and a range of at most {MAX_DISCOVER_DAYS} days are required"), 400
     try:
-        for offset in range((last - first).days + 1):
-            day = (first + timedelta(days=offset)).isoformat()
-            for event in _get(league, "scoreboard", dates=day.replace("-", "")).get("events", []):
-                competition = (event.get("competitions") or [{}])[0]
-                if (competition.get("status") or {}).get("type", {}).get("state") != "post":
-                    continue
-                try:
-                    clips_of_event = clip_list(league, event["id"])
-                except (requests.RequestException, ValueError, TypeError, KeyError, AttributeError):
-                    failed += 1
-                    continue
-                for review in var_incidents(league, event["id"], clips_of_event):
-                    if review["offside"] and kind in ("offside", "all"):
-                        reviews.append(dict(review, event=event["id"], match=event.get("name"), date=day))
-                for clip in clips_of_event:
-                    tag = classify(clip["title"], clip["duration_seconds"])
-                    if clip["source_url"] and (tag == kind or (kind == "all" and tag != "highlights")):
-                        found.append(dict(clip, kind=tag, event=event["id"], match=event.get("name"), date=day))
+        found, reviews, failed = find_clips(league, first, last, kind)
     except (requests.RequestException, ValueError, TypeError, KeyError, AttributeError):
         return jsonify(error="Could not load ESPN fixtures"), 502
-    found.sort(key=lambda c: (c["date"], c["duration_seconds"] or 0), reverse=True)
-    reviews.sort(key=lambda r: r["date"], reverse=True)
-    reviews.sort(key=lambda r: r["clip"] is None)  # stable: clips first, newest first within each group
     return jsonify(provider="ESPN", kind=kind, clips=found, reviews=reviews, events_failed=failed,
                    note="Reviews come from ESPN's match commentary (an offside call and a VAR check at the same minute). A clip is attached "
                         "when its headline names the player: a guess, and whether it shows the incident is not checked until it is analysed.")

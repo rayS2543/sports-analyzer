@@ -207,9 +207,13 @@ def v2_analysis(events):
                {"track_id": 8, "team": "A", "role": "player", "x": 70.0, "y": 20.0, "vx": None},
                {"track_id": 3, "team": "B", "role": "player", "x": 80.0, "y": 30.0, "vx": -2.0},
                {"track_id": 4, "team": "B", "role": "player", "x": 75.0, "y": 40.0, "vx": 0.0},
+               {"track_id": 6, "team": "B", "role": "player", "x": 78.0, "y": 10.0, "vx": 0.0},
+               {"track_id": 9, "team": "B", "role": "goalkeeper", "x": 104.0, "y": 34.0, "vx": 0.0},  # the keeper fixes which end B defends
                {"track_id": 20, "team": None, "role": "referee", "x": 90.0, "y": 10.0}]
     calibrated = {"ok": True, "reprojection_error_m": 0.4, "keypoints": 9, "source": "detected", "homography": [[1, 0, 0], [0, 1, 0], [0, 0, 1]]}
-    frames = [{"t": 12.0, "shot": 0, "calibration": calibrated, "ball": {"x": 60.0, "y": 30.0, "airborne": False}, "players": players},
+    # the teams' positions must agree with the keeper over enough frames before the direction is accepted: ten more beforehand
+    earlier = [{"t": round(11.0 + i / 10, 1), "shot": 0, "calibration": calibrated, "ball": None, "players": players} for i in range(10)]
+    frames = earlier + [{"t": 12.0, "shot": 0, "calibration": calibrated, "ball": {"x": 60.0, "y": 30.0, "airborne": False}, "players": players},
               {"t": 12.1, "shot": 0, "calibration": {"ok": False, "homography": None}, "ball": None, "players": []}]
     return {"version": 2, "window": {"start": 12.0, "end": 17.0}, "pitch": {"length_m": 105.0, "width_m": 68.0},
             "video": {"sampled_fps": 10}, "shots": [{"id": 0, "start": 12.0, "end": 17.0}], "frames": frames, "events": events}
@@ -232,7 +236,7 @@ def test_review_assesses_every_pass(client, env):
     assert first["event"] == PASS
     key = first["key"]
     assert key["attacker_track_id"] == 7 and key["verdict"] == "offside" and key["frame_t"] == 12.0
-    assert key["attack_direction"] == "right" and key["second_last_defender_track_id"] == 3  # keeper unseen → deepest outfielder
+    assert key["attack_direction"] == "right" and key["second_last_defender_track_id"] == 3  # the keeper (104) is last, so the deepest outfielder is second-last
     assert "confidence 0.72" in key["reasons"][0] and "ball left #5" in key["reasons"][0]
     assert any("Timing" in r for r in key["reasons"])
     assert first["candidates"] == [{"track_id": 7, "verdict": "offside", "margin_m": 3.0},

@@ -10,6 +10,11 @@ _locks = {}  # ponytail: one lock per key, never pruned; fine for a handful of l
 def clear():
     """Drop every cached entry. Used to isolate tests from each other."""
     _store.clear()
+    try:
+        import db
+        db.cache_clear()
+    except Exception:
+        pass
 
 
 def cached(ttl_seconds):

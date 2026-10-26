@@ -107,3 +107,76 @@ def test_discover_finds_var_offside_reviews_from_commentary_and_attaches_a_named
         result = client.get("/var/discover?league=PD&from=2026-09-04&to=2026-09-04")
     reviews = result.json["reviews"]
     assert [(r["minute"], r["player"], r["outcome"], r["clip"] and r["clip"]["id"]) for r in reviews] == [("87'", "Carlos Esp\u00ed", "goal ruled out", "1")]
+
+
+def test_a_review_without_a_named_clip_falls_back_to_the_matchs_short_highlights_reel(client):
+    commentary = [{"text": "Offside, Celta Vigo. Mikel Oyarzabal is caught offside.", "time": {"displayValue": "48'"}},
+                  {"text": "GOAL OVERTURNED BY VAR: Mikel Oyarzabal (Real Sociedad) scores but the goal is ruled out after a VAR review.", "time": {"displayValue": "48'"}}]
+    source = lambda i: {"source": {"href": f"https://espnmedia-cdn.akamaized.net/{i}.mp4"}}
+    videos = [{"id": 1, "headline": "Celta Vigo vs. Real Sociedad - Game Highlights", "duration": 74, "links": source(1)},
+              {"id": 2, "headline": "Full match highlights", "duration": 600, "links": source(2)},
+              {"id": 3, "headline": "Andrei Radu makes a great save", "duration": 20, "links": source(3)}]
+
+    def fake_get(url, params=None, timeout=None):
+        if url.endswith("/scoreboard"):
+            return response({"events": [{"id": "5", "name": "Real Sociedad at Celta Vigo", "competitions": [{"status": {"type": {"state": "post"}}}]}]})
+        return response({"videos": videos, "commentary": commentary})
+
+    with patch("routes.var_clips.requests.get", side_effect=fake_get):
+        review = client.get("/var/discover?league=PD&from=2026-10-19&to=2026-10-19").json["reviews"][0]
+    assert review["clip"] is None and review["highlights"]["id"] == "1"  # the 10-minute reel is too long to be one incident
+
+
+def test_classify_tags_goal_clips_but_not_penalties_or_saves():
+    from routes.var_clips import classify
+    assert classify("Pablo Dur\u00e1n gets on the scoresheet for Celta Vigo", 61) == "goal"
+    assert classify("Lamine Yamal doubles Barcelona's lead", 66) == "goal"
+    assert classify("Carlos Soler scores penalty goal vs. Valencia", 43) == "other"  # a penalty has no offside to check
+    assert classify("Andrei Radu makes a great save", 20) == "other"
+    assert classify("Mbapp\u00e9 scores in the 11'", 50) == "goal"
+
+
+def test_every_league_the_var_page_offers_is_a_provider_league():
+    from routes.var_clips import ESPN_LEAGUES
+    assert {"PD", "PL", "SA", "BL1", "FL1", "CL"} <= set(ESPN_LEAGUES)  # the picker lists these; an unknown one is a 400
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("44656413", "44656413"),
+    (" 44656413 ", "44656413"),
+    ("https://www.espn.com/watch/syndicatedplayer/_/id/44656413", "44656413"),
+    ("https://www.espn.com/video/clip/_/id/44656413/kylian-mbappe-is-sent-off", "44656413"),
+    ("https://www.espn.com/video/clip?id=44656413", "44656413"),
+    ("https://www.espn.com/soccer/story/_/id/44656783/alaves-vs-real-madrid", None),  # an article id is not a video id
+    ("https://evil.example/watch/x/_/id/44656413", None),
+    ("https://www.espn.com.evil.example/video/clip?id=44656413", None),
+    ("javascript:alert(1)", None),
+    ("", None),
+])
+def test_clip_id_from_accepts_only_espn_video_links_or_ids(text, expected):
+    from routes.var_clips import clip_id_from
+    assert clip_id_from(text) == expected
+
+
+def test_a_clip_is_looked_up_by_link_from_espns_video_api_with_a_fixed_host(client):
+    source = "https://espnmedia-cdn.akamaized.net/espn/media/mbappe.mp4"
+    data = {"videos": [{"id": 44656413, "headline": "Mbappé is sent off", "duration": 65, "links": {
+        "source": {"href": source}, "web": {"href": "https://www.espn.com/video/clip?id=44656413"}}}]}
+    with patch("routes.var_clips.requests.get", return_value=Mock(status_code=200, json=lambda: data, raise_for_status=lambda: None)) as get:
+        result = client.get("/var/clip?link=https://www.espn.com/watch/syndicatedplayer/_/id/44656413")
+    assert result.status_code == 200
+    assert result.json["clip"] == {"id": "44656413", "title": "Mbappé is sent off", "duration_seconds": 65, "source_url": source,
+                                   "page_url": "https://www.espn.com/video/clip?id=44656413"}
+    assert get.call_args.args[0] == "https://api-app.espn.com/v1/video/clips/44656413"
+
+
+def test_a_clip_lookup_that_cannot_resolve_is_a_clean_error(client):
+    with patch("routes.var_clips.requests.get") as get:
+        assert client.get("/var/clip?link=https://example.com/video/clip?id=44656413").status_code == 400
+        assert client.get("/var/clip").status_code == 400
+    get.assert_not_called()
+    with patch("routes.var_clips.requests.get", return_value=Mock(status_code=404)):
+        assert client.get("/var/clip?link=44656413").status_code == 404
+    unusable = {"videos": [{"id": 44656413, "headline": "x", "links": {"source": {"href": "http://127.0.0.1/private.mp4"}}}]}
+    with patch("routes.var_clips.requests.get", return_value=Mock(status_code=200, json=lambda: unusable, raise_for_status=lambda: None)):
+        assert client.get("/var/clip?link=44656413").status_code == 404  # a source off ESPN's CDN is not used

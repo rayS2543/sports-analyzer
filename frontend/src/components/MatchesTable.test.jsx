@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { API_BASE } from "../apiBase";
 import MatchesTable from "./MatchesTable";
 
 const sampleMatches = [
@@ -52,7 +53,7 @@ describe("MatchesTable", () => {
     renderMatchesTable();
 
     await waitFor(() =>
-      expect(fetch).toHaveBeenCalledWith("http://127.0.0.1:5001/matches?league=PD")
+      expect(fetch).toHaveBeenCalledWith(`${API_BASE}/matches?league=PD`)
     );
   });
 
