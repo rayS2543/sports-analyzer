@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import IfabRuleAssistant, { Law11Card, Law12Card } from "./IfabRuleAssistant";
+import IfabRuleAssistant, { Law11Card } from "./IfabRuleAssistant";
 
 describe("IfabRuleAssistant", () => {
   it("renders Law 11 offside evaluation with margin and tolerance", () => {

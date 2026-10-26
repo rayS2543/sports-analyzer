@@ -79,8 +79,8 @@ export function Law11Card({ assessment }) {
         <div className="rounded-lg bg-raised/60 p-3 text-xs text-muted leading-relaxed flex flex-col gap-2 border border-line/60">
           <p>
             <strong className="text-fg">IFAB Law 11.1:</strong> A player is in an offside position if:
-            any part of the head, body or feet is in the opponents' half (excluding the halfway line) and
-            nearer to the opponents' goal line than both the ball and the second-last opponent.
+            any part of the head, body or feet is in the opponents&apos; half (excluding the halfway line) and
+            nearer to the opponents&apos; goal line than both the ball and the second-last opponent.
           </p>
           <p>
             <strong className="text-fg">Active Involvement:</strong> Interfering with play, interfering with an
