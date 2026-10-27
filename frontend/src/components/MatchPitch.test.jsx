@@ -76,6 +76,22 @@ it("declines to invent an end point the feed doesn't have", () => {
   expect(shotEnd({})).toBeNull();
 });
 
+it("classifies the shot the map colours, and keeps a block ahead of the goal line", () => {
+  expect(shotOutcome({ isOwnGoal: true, eventType: "Goal", isOnTarget: true })).toBe("Own goal");
+  expect(shotOutcome({ eventType: "Goal" })).toBe("Goal");
+  expect(shotOutcome({ eventType: "Post" })).toBe("Woodwork");
+  expect(shotOutcome({ eventType: "AttemptSaved" })).toBe("Saved");
+  expect(shotOutcome({ isOnTarget: true })).toBe("Saved");
+  expect(shotOutcome({})).toBe("Off target");
+  expect(shotOutcome({ isBlocked: true, isOnTarget: true, eventType: "AttemptSaved" })).toBe("Blocked");
+
+  expect(shotEnd({ isBlocked: true, blockedX: 90, blockedY: 20, goalCrossedY: 34 })).toEqual({ x: 90, y: 20 });
+  expect(shotEnd({ goalCrossedY: -4 })).toEqual({ x: 105, y: 0 });
+  expect(shotEnd({ goalCrossedY: Number.NaN })).toBeNull();
+  expect(shotEnd({ goalCrossedY: "32" })).toBeNull();
+  expect(shotEnd({ isBlocked: true, blockedX: true, blockedY: 20 })).toBeNull();
+});
+
 describe("formation", () => {
   it("selects a starter and declines to invent missing positions", () => {
     const onSelect = vi.fn();

@@ -409,6 +409,23 @@ def test_concurrent_identical_requests_share_one_upstream_call(client):
     assert upstream.call_count == 1
 
 
+def test_predictions_keeps_an_unseen_club_at_the_initial_rating(client):
+    today = date.today().isoformat()
+
+    def fake_get(url, headers=None, params=None, timeout=10):
+        if params.get("status") == "FINISHED":
+            return FakeResponse({"matches": [make_match("Real Madrid", "Barcelona", 2, 0, today)]})
+        return FakeResponse({"matches": [make_match("Girona", "Real Madrid", None, None, today)]})
+
+    with patch("football_client.requests.get", side_effect=fake_get):
+        tip = client.get("/predictions?league=PD").get_json()[0]
+
+    assert tip["home"] == "Girona"
+    assert tip["home_elo"] == 1500.0
+    assert tip["away_elo"] > 1500
+    assert tip["home_win_pct"] + tip["draw_pct"] + tip["away_win_pct"] == pytest.approx(100, abs=0.2)
+
+
 def test_predictions_picks_higher_rated_team_as_winner(client):
     finished_payload = {
         "matches": [make_match("Real Madrid", "Barcelona", 3, 0, date.today().isoformat())]
@@ -473,6 +490,23 @@ def test_ratings_returns_ranked_table_from_finished_window(client):
 def test_ratings_rejects_unknown_league(client):
     resp = client.get("/ratings?league=NOPE")
     assert resp.status_code == 400
+
+
+@pytest.mark.parametrize("path", [
+    "/matches?league=NOPE",
+    "/predictions?league=NOPE",
+    "/ratings?league=NOPE",
+    "/teams?league=NOPE",
+    "/teams/detail?league=NOPE&name=Real%20Madrid",
+    "/standings?league=NOPE",
+    "/analytics/form/Real%20Madrid?league=NOPE",
+])
+def test_unknown_league_is_rejected_before_any_upstream_call(client, path):
+    with patch("football_client.requests.get", side_effect=AssertionError("upstream")):
+        resp = client.get(path)
+
+    assert resp.status_code == 400
+    assert "NOPE" in resp.get_json()["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -630,6 +664,38 @@ def test_form_is_built_from_matches_persisted_by_a_prior_fetch(client):
     assert data["matches_considered"] == 2
     assert data["form"] == "DW"
     assert data["points"] == 4
+
+
+def test_team_form_uses_each_side_of_the_score():
+    from routes.football import _form_from_matches
+
+    # Newest first, as /teams/detail sorts before it asks for the string.
+    form = _form_from_matches("Real Madrid", [
+        {"home": "Sevilla", "away": "Real Madrid", "winner": "Real Madrid", "home_points": 0, "away_points": 3},
+        {"home": "Real Madrid", "away": "Barcelona", "winner": "Real Madrid", "home_points": 3, "away_points": 0},
+    ])
+
+    assert form == {"form": "WW", "points": 6, "matches_considered": 2}
+
+
+def test_form_counts_a_win_at_home_and_away(client):
+    """Points follow the club, not the home column. A draw cannot show this:
+    both sides are awarded one point."""
+    payload = {
+        "matches": [
+            make_match("Real Madrid", "Barcelona", 2, 0, "2024-01-05"),
+            make_match("Sevilla", "Real Madrid", 0, 2, "2024-02-01"),
+        ]
+    }
+
+    with patch("football_client.requests.get", return_value=FakeResponse(payload)):
+        client.get("/matches")
+
+    data = client.get("/analytics/form/Real Madrid").get_json()
+
+    assert data["form"] == "WW"
+    assert data["points"] == 6
+    assert data["matches_considered"] == 2
 
 
 def test_form_respects_the_limit_query_param(client):

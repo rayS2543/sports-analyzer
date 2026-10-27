@@ -85,6 +85,45 @@ def test_champions_league_fixtures_reads_the_league_stage_only(monkeypatch):
     ]
 
 
+def test_unknown_league_does_not_fetch_a_match_page(monkeypatch):
+    def fail(*args, **kwargs):
+        raise AssertionError("fetched")
+
+    monkeypatch.setattr(fotmob_client.requests, "get", fail)
+
+    assert fotmob_client.find_fixture("ZZ", "2026-09-20", "Home", "Away") is None
+
+
+def test_match_page_requires_embedded_json(monkeypatch):
+    pages = [
+        fotmob_client.requests.exceptions.ConnectionError("down"),
+        503,
+        "<html>no next data</html>",
+        '<script id="__NEXT_DATA__">{</script>',
+        '<script id="__NEXT_DATA__">{"props":{"pageProps":{"content":{"ok":true}}}}</script>',
+    ]
+    calls = {"n": 0}
+
+    def get(url, headers=None, timeout=10):
+        calls["n"] += 1
+        page = pages[calls["n"] - 1]
+        if isinstance(page, Exception):
+            raise page
+        if isinstance(page, int):
+            return type("Response", (), {"ok": False, "status_code": page, "text": ""})()
+        return type("Response", (), {"ok": True, "status_code": 200, "text": page})()
+
+    monkeypatch.setattr(fotmob_client.requests, "get", get)
+
+    for _ in range(4):
+        with pytest.raises(fotmob_client.FotMobError) as exc:
+            fotmob_client._fetch_page_props("/match/1")
+        assert exc.value.status_code == 502
+
+    assert fotmob_client._fetch_page_props("/match/1")["content"]["ok"] is True
+    assert calls["n"] == 5
+
+
 def test_accents_normalize_without_merging_different_clubs():
     assert fotmob_client._normalize("Atlético Madrid") == fotmob_client._normalize("Atletico Madrid")
     assert fotmob_client._normalize("Bayern München") == fotmob_client._normalize("Bayern Munchen")
