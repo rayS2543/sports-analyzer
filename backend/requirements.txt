@@ -2,4 +2,5 @@ Flask
 Flask-Cors
 python-dotenv
 requests
+certifi>=2026.10.19
 gunicorn
