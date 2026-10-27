@@ -123,3 +123,13 @@ def test_upset_swings_ratings_more_than_favorite_win():
     from elo import _mov_multiplier
 
     assert _mov_multiplier(1, -200) > _mov_multiplier(1, 200)
+
+
+def test_compute_ratings_applies_matches_in_date_order():
+    first = _match("A", "B", 1, 0, "2024-01-01")
+    second = _match("A", "B", 0, 3, "2024-02-01")
+    forward = compute_ratings([first, second])
+    backward = compute_ratings([second, first])
+
+    assert backward["ratings"] == forward["ratings"]
+    assert forward["ratings"]["A"] < compute_ratings([first])["ratings"]["A"]
