@@ -2,7 +2,7 @@ import itertools
 import json
 import threading
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -409,6 +409,21 @@ def test_concurrent_identical_requests_share_one_upstream_call(client):
     assert upstream.call_count == 1
 
 
+def test_predictions_are_ordered_by_kickoff_day(client):
+    later = make_match("Later Home", "Later Away", None, None, "2026-05-02")
+    earlier = make_match("Early Home", "Early Away", None, None, "2026-05-01")
+
+    def fake_get(url, headers=None, params=None, timeout=10):
+        if params.get("status") == "FINISHED":
+            return FakeResponse({"matches": []})
+        return FakeResponse({"matches": [later, earlier]})
+
+    with patch("football_client.requests.get", side_effect=fake_get):
+        resp = client.get("/predictions?league=PL")
+
+    assert [row["date"] for row in resp.get_json()] == ["2026-05-01", "2026-05-02"]
+
+
 def test_predictions_picks_higher_rated_team_as_winner(client):
     finished_payload = {
         "matches": [make_match("Real Madrid", "Barcelona", 3, 0, date.today().isoformat())]
@@ -475,6 +490,31 @@ def test_ratings_rejects_unknown_league(client):
     assert resp.status_code == 400
 
 
+def test_ratings_keeps_a_result_from_the_90th_day_and_drops_the_day_before(client):
+    today = datetime.now(timezone.utc).date()
+    inside = (today - timedelta(days=90)).isoformat()
+    outside = (today - timedelta(days=91)).isoformat()
+
+    def fake_get(url, headers=None, params=None, timeout=10):
+        assert params.get("status") == "FINISHED"
+        return FakeResponse(
+            {
+                "matches": [
+                    # A blowout just outside the window must not reorder the table.
+                    make_match("Beta", "Alpha", 9, 0, outside),
+                    make_match("Alpha", "Beta", 1, 0, inside),
+                ]
+            }
+        )
+
+    with patch("football_client.requests.get", side_effect=fake_get):
+        body = client.get("/ratings?league=SA").get_json()
+
+    assert body["matches_used"] == 1
+    assert body["ratings"][0]["team"] == "Alpha"
+    assert body["ratings"][0]["played"] == 1
+
+
 # ---------------------------------------------------------------------------
 # /teams
 # ---------------------------------------------------------------------------
@@ -507,6 +547,22 @@ def test_teams_returns_cleaned_team_list(client):
             "crest": "https://crests.example/rma.png",
         }
     ]
+
+
+def test_football_data_distinguishes_a_plan_limit_from_an_unexpected_status(client):
+    with patch("football_client.requests.get", return_value=FakeResponse({"message": "no"}, status_code=403)):
+        limited = client.get("/standings?league=BL1")
+
+    assert limited.status_code == 403
+    assert limited.get_json()["error"] == (
+        "This competition isn't available on the current football-data.org plan."
+    )
+
+    with patch("football_client.requests.get", return_value=FakeResponse({"message": "no"}, status_code=500)):
+        broken = client.get("/teams?league=FL1")
+
+    assert broken.status_code == 502
+    assert broken.get_json()["error"] == "Unexpected football-data.org response (500)."
 
 
 def test_teams_returns_500_on_unexpected_api_response(client):
@@ -581,6 +637,26 @@ def test_standings_falls_back_to_first_table_when_no_total(client):
     assert resp.status_code == 200
     data = resp.get_json()
     assert data[0]["team_name"] == "Only Table Team"
+
+
+def test_standings_orders_a_missing_position_after_numbered_rows(client):
+    payload = {
+        "standings": [
+            {
+                "type": "TOTAL",
+                "table": [
+                    _standings_entry(None, "Unplaced", 0),
+                    _standings_entry(2, "Second Place", 40),
+                    _standings_entry(1, "First Place", 45),
+                ],
+            }
+        ]
+    }
+
+    with patch("football_client.requests.get", return_value=FakeResponse(payload)):
+        resp = client.get("/standings?league=PD")
+
+    assert [row["team_name"] for row in resp.get_json()] == ["First Place", "Second Place", "Unplaced"]
 
 
 def test_standings_returns_500_on_unexpected_api_response(client):
