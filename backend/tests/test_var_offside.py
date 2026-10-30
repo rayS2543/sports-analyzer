@@ -259,6 +259,69 @@ def test_kick_moment_falls_back_to_the_gap_when_the_ball_is_not_usable():
     assert moment["t"] == 1.0 and moment["sigma_s"] == pytest.approx(0.1) and moment["method"].startswith("last sample")
 
 
+def _retouch(frames, **ball):
+    for f in frames:
+        if f["ball"]:
+            f["ball"].update(ball)
+    return frames
+
+
+def test_a_low_strike_is_a_ground_point_and_a_lofted_one_is_not():
+    # Samples claim a wildly uncertain flight. The first detection after the ball leaves is still under 1 m,
+    # so the kick itself is on the grass and can set the offside line.
+    low = _retouch(pass_frames(), z=0.4, airborne=True, height_uncertainty_m=2.0)
+    for f in low:
+        if f["ball"]:
+            f["ball"]["ground_x"] = f["ball"]["x"] - 2.0
+    moment = kick_moment(low, 1, 1.0, FPS)
+    assert moment["ball"]["airborne"] is False and moment["ball"]["z"] == 0.0
+    assert moment["ball"]["height_model"] == "at_kick" and moment["ball"]["position_uncertainty_m"] == 0.5
+    assert review_event(low, EVENT, 105.0, FPS)[0]["verdict"] == "offside"
+
+    # 1.00 m still counts as struck near the grass; the next centimetre does not.
+    at_limit = kick_moment(_retouch(pass_frames(), z=1.0), 1, 1.0, FPS)
+    assert at_limit["ball"]["airborne"] is False
+    lofted_frames = _retouch(pass_frames(), z=1.01, airborne=None, height_model="ballistic")
+    for f in lofted_frames:
+        if f["ball"]:
+            f["ball"].pop("height_uncertainty_m", None)
+    lofted = kick_moment(lofted_frames, 1, 1.0, FPS)
+    assert lofted["method"].startswith("ball line") and set(lofted["ball"]) == {"x", "y"}
+    key, _ = review_event(lofted_frames, EVENT, 105.0, FPS)
+    assert key["verdict"] == "inconclusive" and "ball height unknown" in key["feasibility"]["blockers"]
+
+
+def test_outlier_and_slow_or_gappy_ball_tracks_do_not_invent_a_kick():
+    frames = pass_frames()
+    for f in frames:
+        if f["t"] in (1.2, 1.3) and f["ball"]:  # wild points on the way out must not pull the fitted line
+            f["ball"].update(x=0.0, y=0.0, height_model="outlier")
+    moment = kick_moment(frames, 1, 1.0, FPS)
+    assert moment["method"].startswith("ball line") and abs(moment["t"] - KICK) < 0.05
+
+    slow = pass_frames()
+    for f in slow:
+        if f["ball"]:
+            f["ball"]["x"] = 50.3 + max(0.0, f["t"] - KICK) * 1.0  # 1 m/s: the passer could still be carrying it
+    slow_moment = kick_moment(slow, 1, 1.0, FPS)
+    assert slow_moment["t"] == 1.0 and slow_moment["method"].startswith("last sample") and slow_moment["sigma_s"] == pytest.approx(0.2)
+
+    gappy = kick_moment(pass_frames(missing_ball_at=(1.1, 1.3, 1.4)), 1, 1.0, FPS)
+    assert gappy["t"] == 1.0 and gappy["method"].startswith("last sample") and gappy["sigma_s"] == pytest.approx(0.2)
+
+
+def test_frame_at_borrows_a_missed_ball_and_keeps_a_player_seen_on_one_side():
+    frames = pass_frames()  # no detection at 1.1, the sample nearest 1.09
+    scene = frame_at(frames, 1.09, {"x": 51.0, "y": 30.0})
+    assert scene["ball"]["x"] == 51.0 and scene["ball"]["y"] == 30.0
+    assert scene["ball"]["airborne"] is False and scene["ball"]["z"] == 0.0 and scene["ball"]["height_model"] == "rolling"
+
+    frames[10]["players"].append({"track_id": 8, "team": "A", "role": "player", "x": 40.0, "y": 12.0, "vx": 1.0})
+    held = frame_at(frames, 1.02)
+    player = next(p for p in held["players"] if p["track_id"] == 8)
+    assert player["x"] == 40.0 and player["y"] == 12.0 and player["vx"] == 1.0
+
+
 def test_review_event_judges_the_kick_not_the_detector_sample():
     frames = pass_frames()
     sample = min(frames, key=lambda f: abs(f["t"] - EVENT["t"]))
