@@ -123,3 +123,45 @@ def test_upset_swings_ratings_more_than_favorite_win():
     from elo import _mov_multiplier
 
     assert _mov_multiplier(1, -200) > _mov_multiplier(1, 200)
+
+
+def test_a_later_blank_crest_does_not_erase_one_already_stored():
+    kept = compute_ratings(
+        [
+            _match("Arsenal", "Chelsea", 1, 0, "2024-01-01", home_crest="arsenal.png", away_crest="chelsea.png"),
+            _match("Arsenal", "Chelsea", 1, 0, "2024-01-08"),
+        ]
+    )
+    assert kept["crests"]["Arsenal"] == "arsenal.png"
+    assert kept["crests"]["Chelsea"] == "chelsea.png"
+
+    replaced = compute_ratings(
+        [
+            _match("Arsenal", "Chelsea", 1, 0, "2024-01-01", home_crest="old.png"),
+            _match("Arsenal", "Chelsea", 0, 1, "2024-01-08", home_crest="new.png"),
+        ]
+    )
+    assert replaced["crests"]["Arsenal"] == "new.png"
+
+
+def test_tied_ratings_sort_by_team_name():
+    table = ranked_table(
+        {
+            "ratings": {"Zeta": 1600.0, "Mango": 1500.0, "Alpha": 1500.0},
+            "played": {},
+            "crests": {},
+            "deltas": {},
+        }
+    )
+    assert [row["team"] for row in table] == ["Zeta", "Alpha", "Mango"]
+    assert [row["rank"] for row in table] == [1, 2, 3]
+
+
+def test_draw_probability_stays_between_eight_and_thirty_five_percent():
+    home, draw, away = match_probabilities(1900, 1200)
+    assert draw == 8.0
+    assert math.isclose(home + draw + away, 100.0, abs_tol=0.05)
+    assert home > away
+
+    _, capped, _ = match_probabilities(1500, 1500 + HOME_ADVANTAGE, draw_base=0.5)
+    assert capped == 35.0

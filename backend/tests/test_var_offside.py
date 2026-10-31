@@ -2,7 +2,17 @@ import math
 
 import pytest
 
-from var_offside import BODY_MARGIN_M, FALLBACK_CLOSING_MPS, assess, feasibility, frame_at, kick_moment, review, review_event
+from var_offside import (
+    AIR_SHIFT_PER_M,
+    BODY_MARGIN_M,
+    FALLBACK_CLOSING_MPS,
+    assess,
+    feasibility,
+    frame_at,
+    kick_moment,
+    review,
+    review_event,
+)
 
 
 def player(track, team, x, role="player", y=30.0):
@@ -220,6 +230,29 @@ def test_ball_on_the_grass_adds_only_its_detection_error():
     assert result["uncertainty_m"] == round(math.sqrt(0.4 ** 2 + (2 * BODY_MARGIN_M) ** 2 + 0.3 ** 2), 2)
 
 
+def test_low_ball_uses_the_default_ground_shift_instead_of_dividing_by_its_height():
+    # z = 0.2 m is below the 0.3 m floor. Dividing the 1.2 m ground shift by that height
+    # would add 3 m of error and swallow a 2 m margin; the default 2.5 m per metre of height does not.
+    f = with_ball(
+        frame(83.0),
+        airborne=True,
+        z=0.2,
+        height_uncertainty_m=0.5,
+        ground_x=79.8,
+        ground_y=30.0,
+        position_uncertainty_m=0.2,
+    )
+    result = assess(f, 7, "A", "right")
+    shift = math.hypot(81.0 - 79.8, 0.0)
+    assert shift / 0.2 > AIR_SHIFT_PER_M
+    ball_error = math.hypot(0.2, 0.5 * AIR_SHIFT_PER_M)
+    base = math.sqrt(0.4 ** 2 + (2 * BODY_MARGIN_M) ** 2)
+    assert result["uncertainty_m"] == round(math.hypot(base, ball_error), 2)
+    assert result["margin_m"] == pytest.approx(2.0)
+    assert result["verdict"] == "offside"
+    assert math.hypot(base, math.hypot(0.2, 0.5 * (shift / 0.2))) > result["margin_m"]
+
+
 # --- the moment the ball is played ----------------------------------------------------------------------
 
 FPS = 10
@@ -259,6 +292,60 @@ def test_kick_moment_falls_back_to_the_gap_when_the_ball_is_not_usable():
     assert moment["t"] == 1.0 and moment["sigma_s"] == pytest.approx(0.1) and moment["method"].startswith("last sample")
 
 
+def _straight(ball_x, passer_x):
+    """One shot, ball and passer positions as functions of t. Both are on y = 30."""
+    frames = []
+    for i in range(20):
+        t = round(i / FPS, 3)
+        frames.append({
+            "t": t,
+            "shot": 0,
+            "calibration": {"ok": True, "reprojection_error_m": 0.4, "source": "detected"},
+            "ball": {"x": ball_x(t), "y": 30.0, "z": 0.0, "airborne": False, "height_model": "rolling", "position_uncertainty_m": 0.2},
+            "players": [
+                {"track_id": 1, "team": "A", "role": "player", "x": passer_x(t), "y": 30.0, "vx": 0.0},
+                {"track_id": 7, "team": "A", "role": "player", "x": 70.0, "y": 20.0, "vx": 0.0},
+                {"track_id": 3, "team": "B", "role": "player", "x": 80.0, "y": 25.0, "vx": 0.0},
+            ],
+        })
+    return frames
+
+
+def _kept_the_detector_time(moment):
+    assert moment["t"] == 1.0 and moment["method"].startswith("last sample") and "ball" not in moment
+
+
+def test_kick_moment_rejects_a_bend_a_miss_and_a_rewind():
+    bent = pass_frames()
+    for f in bent:  # four post-kick samples leave a straight line by more than 1 m
+        if f["ball"] and f["t"] in (1.2, 1.3, 1.4, 1.5):
+            f["ball"]["y"] = 33.0 if f["t"] in (1.3, 1.5) else 30.0
+    _kept_the_detector_time(kick_moment(bent, 1, 1.0, FPS))
+
+    wide = pass_frames()  # parallel to the passer, 2.2 m to the side: the line never reaches the foot
+    for f in wide:
+        if f["ball"]:
+            f["ball"]["y"] = 32.2
+    _kept_the_detector_time(kick_moment(wide, 1, 1.0, FPS))
+
+    # The line meets the passer 0.18 s before the detector's sample, past the 1.5-sample rewind.
+    early = _straight(lambda t: 50.0 + 20.0 * (t - 0.82), lambda t: 50.0)
+    _kept_the_detector_time(kick_moment(early, 1, 1.0, FPS))
+
+
+def test_kick_moment_ignores_a_ball_that_is_only_travelling_with_the_passer():
+    # 6 m/s is a kick on its own, but the passer is moving at 4 m/s, so the ball is not leaving the foot.
+    carried = _straight(lambda t: 42.0 + 6.0 * t, lambda t: 40.0 + 4.0 * t)
+    _kept_the_detector_time(kick_moment(carried, 1, 1.0, FPS))
+
+
+def test_kick_moment_caps_timing_uncertainty_at_one_sample():
+    # Ball 5.2 m/s, passer 2 m/s: legal kick, but 0.5 m of foot error over a 3.2 m/s gap is wider than 0.1 s.
+    slow = _straight(lambda t: (40.0 + 2.0 * KICK) + 5.2 * (t - KICK), lambda t: 40.0 + 2.0 * t)
+    moment = kick_moment(slow, 1, 1.0, FPS)
+    assert moment["method"].startswith("ball line") and moment["sigma_s"] == pytest.approx(1 / FPS)
+
+
 def test_review_event_judges_the_kick_not_the_detector_sample():
     frames = pass_frames()
     sample = min(frames, key=lambda f: abs(f["t"] - EVENT["t"]))
@@ -268,6 +355,25 @@ def test_review_event_judges_the_kick_not_the_detector_sample():
     assert key["verdict"] == "offside" and key["margin_m"] == pytest.approx(1.3, abs=0.2)
     assert key["receiver"]["verdict"] == "offside" and key["receiver"]["attacker_track_id"] == 7
     assert key["frame_t"] == pytest.approx(KICK, abs=0.03)
+
+
+def test_review_event_stays_on_its_shot_and_does_not_judge_an_opponent():
+    frames = pass_frames()
+    other_shot = []
+    for f in frames:
+        moved = {
+            **f,
+            "shot": 1,
+            "players": [{**p, "x": 20.0} for p in f["players"]],
+            "ball": None if f["ball"] is None else {**f["ball"], "x": 20.0},
+        }
+        other_shot.append(moved)
+    key, _ = review_event(frames + other_shot, EVENT, 105.0, FPS)
+    assert key["verdict"] == "offside" and key["margin_m"] == pytest.approx(1.3, abs=0.2)
+
+    opponent = {**EVENT, "receiver_track_id": 3, "receiver_team": "B"}
+    key, _ = review_event(frames, opponent, 105.0, FPS)
+    assert key["verdict"] == "offside" and "receiver" not in key
 
 
 def test_frame_at_interpolates_players_and_keeps_the_worse_calibration():
