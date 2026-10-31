@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import sample from "./fixtures/sampleAnalysis.json";
-import { cameraPreset, frameAt, legible, nearestCalibratedTime, parseWindow, pitchMarkings, personColors, shotAt, stepFrameTime, toWorld, windowAround } from "./varMath";
+import { cameraPreset, formatClock, frameAt, legible, nearestCalibratedTime, parseWindow, pitchMarkings, personColors, shotAt, stepFrameTime, toWorld, windowAround } from "./varMath";
 
 const shots = [
   { id: 0, start: 0, end: 2 },
@@ -70,6 +70,15 @@ describe("analysis window", () => {
     expect(parseWindow("17", "12")).toBeNull();
     expect(parseWindow("0", "11")).toBeNull();
     expect(parseWindow(null, "5")).toBeNull();
+  });
+});
+
+describe("formatClock", () => {
+  it("renders minutes and tenths, and a non-time as zero", () => {
+    expect(formatClock(0)).toBe("0:00.0");
+    expect(formatClock(65.04)).toBe("1:05.0");
+    expect(formatClock(Number.NaN)).toBe("0:00.0");
+    expect(formatClock(Number.POSITIVE_INFINITY)).toBe("0:00.0");
   });
 });
 
