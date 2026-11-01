@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import sample from "./fixtures/sampleAnalysis.json";
-import { cameraPreset, frameAt, legible, nearestCalibratedTime, parseWindow, pitchMarkings, personColors, shotAt, stepFrameTime, toWorld, windowAround } from "./varMath";
+import { cameraPreset, frameAt, legible, nearestCalibratedTime, parseWindow, personLabel, pitchMarkings, personColors, shotAt, stepFrameTime, toWorld, windowAround } from "./varMath";
 
 const shots = [
   { id: 0, start: 0, end: 2 },
@@ -114,5 +114,13 @@ describe("pitch geometry", () => {
     expect(legible("#ffffff")).toBe("#ffffff");
     expect(legible("#1d3c8f")).toBe("#406ad8"); // still blue, brighter
     expect(legible("#5b4e5f")).toBe("#ae4dcb"); // Barça's measured mud → clearly not referee grey
+  });
+
+  it("labels a squad number, including 0, and otherwise the identity that survives a cut", () => {
+    expect(personLabel({ jersey_number: 0, track_id: 4 })).toBe("#0");
+    expect(personLabel({ jersey_number: 9, track_id: 4 })).toBe("#9");
+    expect(personLabel({ track_id: 4, global_id: 12 })).toBe("ID 12");
+    expect(personLabel({ track_id: 4 })).toBe("ID 4");
+    expect(personLabel({ jersey_number: null, track_id: 4, global_id: 7 })).toBe("ID 7");
   });
 });
