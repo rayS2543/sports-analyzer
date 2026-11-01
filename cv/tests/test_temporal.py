@@ -93,6 +93,97 @@ def test_no_pass_when_player_keeps_the_ball():
     assert temporal.detect_passes(frames) == []
 
 
+def test_an_airborne_ball_is_not_a_ground_pass():
+    # Same path as a completed pass, but the flight is in the air: those samples are not ground positions.
+    path = [(30.3, 30.0)] * 5 + [(30.3 + 2.0 * k, 30.0) for k in range(1, 10)] + [(49.8, 30.0)] * 4
+    frames = _pass_frames(path)
+    for frame in frames[5:]:
+        frame["ball"]["airborne"] = True
+    assert temporal.detect_passes(frames) == []
+
+
+def test_an_isolated_ball_jump_is_not_a_pass():
+    # One sample 50 m away and back is faster than a ball can travel, so it is dropped rather than played.
+    path = [(30.3, 30.0)] * 5 + [(80.0, 30.0)] + [(30.4, 30.0)] * 6
+    assert temporal.detect_passes(_pass_frames(path)) == []
+
+
+def test_an_interception_is_still_a_pass_and_names_the_other_team():
+    path = [(30.3, 30.0)] * 5 + [(30.3 + 2.0 * k, 30.0) for k in range(1, 10)] + [(49.8, 30.0)] * 4
+    mate = temporal.detect_passes(_pass_frames(path))
+    other = temporal.detect_passes(_pass_frames(path, receiver_team="B"))
+    assert len(mate) == 1 and len(other) == 1
+    assert other[0]["receiver_track_id"] == 2 and other[0]["receiver_team"] == "B"
+    assert "intercepted" in other[0]["reason"]
+    assert other[0]["confidence"] < mate[0]["confidence"]
+
+
+def test_a_clearance_needs_five_metres_of_ball_that_keeps_moving_away():
+    far = (80.0, 30.0)  # never close enough to count as a receiver
+    short = [(30.3, 30.0)] * 5 + [(31.5, 30.0), (32.7, 30.0), (33.9, 30.0), (34.5, 30.0)]
+    assert temporal.detect_passes(_pass_frames(short, receiver=far)) == []
+    coming_back = [(30.3, 30.0)] * 5 + [(36.0, 30.0), (40.0, 30.0), (38.0, 30.0), (36.0, 30.0)]
+    assert temporal.detect_passes(_pass_frames(coming_back, receiver=far)) == []
+    away = [(30.3, 30.0)] * 5 + [(32.0, 30.0), (34.0, 30.0), (36.0, 30.0), (38.0, 30.0)]
+    events = temporal.detect_passes(_pass_frames(away, receiver=far))
+    assert len(events) == 1
+    assert events[0]["receiver_track_id"] is None and "no receiver" in events[0]["reason"]
+
+
+def _rolling(step_m, n, x0=30.2):
+    path = [(x0, 30.0)] * 4
+    x = x0
+    for _ in range(n):
+        x = round(x + step_m, 3)
+        path.append((x, 30.0))
+    return path
+
+
+def test_slow_motion_uses_real_time_and_a_long_flight_does_not_find_a_receiver():
+    # 0.3 m per 0.1 s of tape is 3 m/s, under the pass floor, and the receiver is more than 4 s of tape away.
+    path = _rolling(0.3, 60)
+    frames = _pass_frames(path, receiver=path[-1])
+    assert temporal.detect_passes(frames) == []
+    assert temporal.detect_passes(frames, speeds={0: 1.0}) == []
+    events = temporal.detect_passes(frames, speeds={0: 0.5})
+    assert len(events) == 1
+    assert events[0]["receiver_track_id"] == 2
+    assert events[0]["ball_speed_mps"] >= temporal.MIN_PASS_SPEED
+
+
+def test_slow_motion_velocity_is_real_time_and_a_glitch_is_not_a_speed():
+    t = np.arange(21) * 0.1
+    frames = _frames(30 + 2.5 * t, np.full(len(t), 20.0))
+    temporal.smooth_tracks(frames, playback_speed=0.5)
+    vx = [f["players"][0]["vx"] for f in frames[4:-4]]
+    assert all(v is not None for v in vx) and abs(np.mean(vx) - 5.0) < 0.15
+
+    fast = _frames(30 + 20.0 * t, np.full(len(t), 20.0))
+    temporal.smooth_tracks(fast)
+    assert all(f["players"][0]["vx"] is None for f in fast)
+
+
+def test_opposite_kits_and_distant_fragments_are_not_the_same_runner():
+    box = lambda x: (x, 100, x + 20, 150)
+
+    def person(ident, pos, team):
+        return {"id": ident, "box": box(100), "pos": pos, "conf": 0.9, "team": team}
+
+    overlap = [[person(1, (10.0, 20.0), "A"), person(2, (10.1, 20.0), "B")] for _ in range(6)]
+    id_map, drop = track.merge_tracks(overlap, [0.1 * k for k in range(6)])
+    assert id_map == {1: 1, 2: 2} and drop == set()
+
+    late = [[person(1, (10.0, 20.0), "A")] for _ in range(4)] + [[] for _ in range(5)]
+    late.append([person(4, (10.4, 20.0), "A")])
+    id_map, _ = track.merge_tracks(late, [0.1 * k for k in range(len(late))])
+    assert id_map[4] == 4 and id_map[1] == 1
+
+    far = [[person(1, (10.0, 20.0), "A")] for _ in range(4)] + [[]]
+    far.append([person(4, (20.0, 20.0), "A")])
+    id_map, _ = track.merge_tracks(far, [0.1 * k for k in range(len(far))])
+    assert id_map[4] == 4 and id_map[1] == 1
+
+
 def test_team_cap_and_duplicates():
     players = [{"track_id": i, "role": "player", "team": "A", "x": 5.0 * i, "y": 10.0, "confidence": 0.9,
                 "team_score": 0.5 + 0.03 * i} for i in range(13)]
