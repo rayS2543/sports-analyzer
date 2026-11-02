@@ -44,6 +44,17 @@ def test_assign_tracks_gives_a_split_vote_no_team_and_discounts_crowded_crops():
     assert team[3] is None and 0.5 < score[3] < teams.KIT_SHARE
 
 
+def test_opponents_closer_than_half_a_metre_are_both_kept():
+    players = [
+        {"track_id": 1, "role": "player", "team": "A", "x": 10.0, "y": 10.0, "confidence": 0.9, "team_score": 0.9},
+        {"track_id": 2, "role": "player", "team": "B", "x": 10.2, "y": 10.1, "confidence": 0.8, "team_score": 0.8},
+        {"track_id": 3, "role": "player", "team": "A", "x": 10.3, "y": 10.0, "confidence": 0.4, "team_score": 0.4},
+    ]
+    kept = teams.cap_per_frame(players)
+    assert {p["track_id"] for p in kept} == {1, 2}
+    assert [p["team"] for p in kept if p["track_id"] == 2] == ["B"]
+
+
 def test_a_track_whose_crops_are_all_odd_kit_has_no_team_even_when_short():
     # an official seen for 2 frames is too short to be called a referee, but its (blue-ish) shirt must not
     # make it a team-B player: shirts far from both kits do not vote
