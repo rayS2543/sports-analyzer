@@ -270,6 +270,115 @@ def test_dogso_not_observable_without_calibration():
     assert all(not v["observable"] and v["value"] is None and v["confidence"] == 0 for v in out.values())
 
 
+def _placed(track, team, x, role="player", shot=0):
+    return {"shot": shot, "players": []} if track is None else {
+        "shot": shot, "players": [{"track_id": track, "team": team, "role": role, "x": x, "y": 34.0}]}
+
+
+def test_attacked_goal_follows_the_defending_keeper():
+    # The other team's keeper, and a keeper in a different shot, must not pick the goal.
+    frames = [
+        {"shot": 0, "players": [
+            {"track_id": 1, "team": "B", "role": "goalkeeper", "x": 8.0, "y": 34.0},
+            {"track_id": 2, "team": "A", "role": "goalkeeper", "x": 98.0, "y": 34.0},
+            {"track_id": 3, "team": "B", "role": "player", "x": None, "y": 34.0},
+        ]},
+        {"shot": 1, "players": [{"track_id": 9, "team": "B", "role": "goalkeeper", "x": 100.0, "y": 34.0}]},
+    ]
+    goal, basis, conf = fouls.attacked_goal({"frames": frames}, 0, "B", (6.0, 0.0))
+    assert (goal, basis, conf) == (0.0, "defending goalkeeper's position", 0.9)
+    right = [{"shot": 0, "players": [{"track_id": 1, "team": "B", "role": "goalkeeper", "x": 100.0, "y": 34.0}]}]
+    assert fouls.attacked_goal({"frames": right}, 0, "B", (-6.0, 0.0))[0] == 105.0
+    # Median, not the deeper keeper: one at each end still protects the left goal.
+    both = [{"shot": 0, "players": [
+        {"track_id": 1, "team": "B", "role": "goalkeeper", "x": 10.0, "y": 34.0},
+        {"track_id": 2, "team": "B", "role": "goalkeeper", "x": 90.0, "y": 34.0},
+    ]}]
+    assert fouls.attacked_goal({"frames": both}, 0, "B", None)[0] == 0.0
+
+
+def test_attacked_goal_falls_through_to_team_shape_then_the_run():
+    deep = [{"shot": 0, "players": [
+        {"track_id": i, "team": "B", "role": "player", "x": 80.0, "y": 34.0} for i in range(6)]}]
+    goal, basis, conf = fouls.attacked_goal({"frames": deep}, 0, "B", None)
+    assert (goal, conf) == (105.0, 0.5) and "mean position" in basis
+    # Exactly 5 m from halfway is not enough, and five players are not a shape.
+    on_line = [{"shot": 0, "players": [
+        {"track_id": i, "team": "B", "role": "player", "x": 57.5, "y": 34.0} for i in range(6)]}]
+    few = [{"shot": 0, "players": [
+        {"track_id": i, "team": "B", "role": "player", "x": 90.0, "y": 34.0} for i in range(5)]}]
+    assert fouls.attacked_goal({"frames": on_line}, 0, "B", (2.0, 0.0))[:1] == (105.0,)
+    assert fouls.attacked_goal({"frames": on_line}, 0, "B", (2.0, 0.0))[2] == 0.4
+    assert fouls.attacked_goal({"frames": few}, 0, "B", (-2.0, 0.0)) == (
+        0.0, "the fouled player's running direction (heuristic)", 0.4)
+    # The other team, packed in the left half, does not move B's goal.
+    mixed = [{"shot": 0, "players": [
+        *[{"track_id": i, "team": "A", "role": "player", "x": 10.0, "y": 34.0} for i in range(8)],
+        *[{"track_id": 20 + i, "team": "B", "role": "player", "x": 90.0, "y": 34.0} for i in range(6)],
+    ]}]
+    assert fouls.attacked_goal({"frames": mixed}, 0, "B", None)[0] == 105.0
+    assert fouls.attacked_goal({"frames": on_line}, 0, "B", (1.99, 0.0))[0] is None
+    assert fouls.attacked_goal({"frames": []}, 0, "B", None) == (None, "could not infer which goal is attacked", 0.0)
+
+
+def test_corridor_edge_is_between_attacker_and_goal():
+    tri = fouls.goal_corridor((80.0, 34.0), 105.0)
+    a, b, _ = tri
+    on_edge = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+    assert fouls.in_triangle(on_edge, *tri)
+    assert fouls.in_triangle((100.0, 34.0), *tri)
+    assert not fouls.in_triangle((on_edge[0], on_edge[1] - 0.5), *tri)
+    assert not fouls.in_triangle((106.0, 34.0), *tri)  # behind the goal line is not in the corridor
+
+
+def test_direction_and_penalty_area_keep_their_edges(broadcast):
+    _, G = broadcast
+    challenger = player(5, "B", 80, 34, None)
+    victim = player(9, "A", 70, 34, None)
+
+    def direction(vel):
+        f = frame(1.0, [challenger, victim], ball={"x": 71, "y": 34, "confidence": 0.8, "airborne": False})
+        out, _ = fouls.dogso_factors(f, G, (W, H), challenger, victim, (105.0, "keeper", 0.9), vel)
+        return out["direction_of_play"]["value"]
+
+    assert direction((2.0, 0.0)) == "towards_goal"
+    assert direction((0.4, 2.0)) == "across"  # aimed mostly sideways
+    assert direction((-2.0, 0.0)) == "away_from_goal"
+    assert direction((0.2, 0.0)) == "across"  # aimed at goal, slower than 1 m/s
+    unknown = frame(1.0, [challenger, victim])
+    play = fouls.dogso_factors(unknown, G, (W, H), challenger, victim, (105.0, "keeper", 0.9), None)
+    assert play[0]["direction_of_play"]["observable"] is False
+
+    def area(x, y):
+        vic = player(9, "A", x, y, None)
+        f = frame(1.0, [challenger, vic], ball={"x": x, "y": y, "confidence": 0.8, "airborne": False})
+        box = fouls.dogso_factors(f, G, (W, H), challenger, vic, (105.0, "keeper", 0.9), (2.0, 0.0))[0]["in_penalty_area"]
+        return box["value"], box["confidence"]
+
+    assert area(100.0, 34.0) == (True, pytest.approx(0.81))  # clearly inside: full confidence
+    assert area(89.0, 34.0) == (True, pytest.approx(0.45))  # inside, within 1 m of the box line
+    assert area(88.0, 34.0)[0] is False  # just outside is not the penalty area
+    no_goal, tri = fouls.dogso_factors(unknown, G, (W, H), challenger, victim, (None, "unknown", 0), (2.0, 0.0))
+    assert tri is None and all(not v["observable"] for v in no_goal.values())
+
+
+def test_replay_speed_scales_ground_velocity_and_a_jump_is_not_a_sprint():
+    tracked = [(1.0, {"x": 0.0, "y": 0.0, "vx": 9.0, "vy": 0.0}, None), (1.5, {"x": 1.0, "y": 0.0}, None)]
+    close, how = fouls._velocity(tracked, 1.1)
+    assert close == (9.0, 0.0) and "vx/vy" in how
+    # The vx sample is the nearest, but it is 0.22 s away, so the positions are used instead of 9 m/s.
+    stale, _ = fouls._velocity(tracked, 1.22)
+    assert stale[0] == pytest.approx(2.0)
+    motion = [(1.0, {"x": 0.0, "y": 0.0}, None), (1.4, {"x": 2.0, "y": 0.0}, None)]
+    real, how = fouls._velocity(motion, 1.2, speed=0.5)  # 2 m in 0.4 shot-seconds of a 0.5x replay
+    assert real[0] == pytest.approx(10.0) and "finite difference" in how
+    assert fouls._velocity(motion, 1.2, speed=1.0)[0][0] == pytest.approx(5.0)
+    jump = [(1.0, {"x": 0.0, "y": 0.0}, None), (1.4, {"x": 6.0, "y": 0.0}, None)]  # 15 m/s
+    assert fouls._velocity(jump, 1.2) == (None, None)
+    short = [(1.0, {"x": 0.0, "y": 0.0}, None), (1.1, {"x": 1.0, "y": 0.0}, None)]
+    assert fouls._velocity(short, 1.05) == (None, None)
+
+
 def test_interp_between_samples_and_gap_limit():
     track = [(1.0, {"bbox": [0, 0, 10, 10]}, None), (1.2, {"bbox": [10, 0, 20, 10]}, None)]
     assert fouls._interp(track, 1.1, "bbox") == pytest.approx([5, 0, 15, 10])

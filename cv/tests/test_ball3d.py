@@ -144,6 +144,27 @@ def test_rolling_ball_stays_on_ground():
         assert b["height_uncertainty_m"] is not None
 
 
+def test_ball_at_the_feet_is_not_a_ball_at_the_knee():
+    """The lower half of a box is a kick (a free segment break). Only the lowest 20% is 'at the feet',
+    which is allowed to call an unfitted ball on the grass."""
+    player = {"bbox": [0, 0, 100, 100]}  # feet at y = 100; 0.3 of the height pads the sides
+    frame = {"players": [player]}
+
+    def near(bottom_y, band=0.5, x=50):
+        return ball3d._near_player(frame, {"image_bottom": [x, bottom_y]}, band=band)
+
+    assert near(80, ball3d.AT_FEET_BAND) and near(100, ball3d.AT_FEET_BAND)
+    assert not near(79.9, ball3d.AT_FEET_BAND)
+    assert near(50) and not near(49.9)  # knee height is a kick, not a foot
+    assert not near(40, ball3d.AT_FEET_BAND) and not near(40)
+    assert not near(95, x=131) and near(95, x=130)  # 0.3 of the box height past the side
+    # A detected box uses its own bottom, not a separate image point that says the ball is at the feet.
+    assert not ball3d._near_player(frame, {"bbox": [40, 20, 60, 40], "image_bottom": [50, 95]})
+    assert ball3d._near_player(frame, {"bbox": [40, 70, 60, 95]}, band=ball3d.AT_FEET_BAND)
+    assert not ball3d._near_player(frame, {})
+    assert not ball3d._near_player({"players": []}, {"image_bottom": [50, 95]})
+
+
 def test_uncalibrated_frames_untouched_and_idempotent():
     traj, _, _ = lofted_pass()
     an = make_analysis(traj, np.random.default_rng(2))

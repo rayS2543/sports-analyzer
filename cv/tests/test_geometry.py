@@ -2,6 +2,7 @@
 
 import cv2
 import numpy as np
+import pytest
 
 from var_cv import pitch, shots, track
 
@@ -157,6 +158,40 @@ def test_a_track_never_continues_onto_the_other_kit_or_a_much_smaller_box():
     assert ids[0][0] != ids[1][0]
     ids = _track([(box, ["A"]), (box, ["A"]), (box, [None])])  # unlabelled blur does not break a track
     assert ids[0][0] == ids[2][0]
+
+
+def test_region_error_uses_the_90th_percentile_and_rejects_one_unobservable_sample():
+    region = np.ones((200, 200), np.uint8)
+
+    def sigma(pts):
+        err = np.full(len(pts), 0.3)
+        err[0] = 40.0  # one edge sample extrapolates; it must not reject the frame
+        return err
+
+    assert pitch.region_error(sigma, region, step=40) == pytest.approx(0.3)
+
+    def unobservable(pts):
+        err = np.full(len(pts), 0.3)
+        err[-1] = np.inf
+        return err
+
+    assert pitch.region_error(unobservable, region, step=40) == float("inf")
+    assert pitch.region_error(sigma, np.zeros((80, 80), np.uint8), step=40) is None
+
+
+def test_painted_line_runs_drop_collinear_noise_across_a_gap():
+    from var_cv.paintcam import _runs
+
+    direction = np.array([1.0, 0.0])
+    line = np.c_[np.linspace(0, 200, 40), np.zeros(40)]
+    speck = np.c_[np.linspace(280, 320, 8), np.zeros(8)]  # 80 px gap, 40 px long: not part of the line
+    later = np.c_[np.linspace(400, 520, 30), np.zeros(30)]
+    kept = _runs(np.vstack([later, speck, line]), direction)
+    xs = kept[:, 0]
+    assert xs.min() < 5 and xs.max() > 510
+    assert not ((xs > 250) & (xs < 350)).any()
+    assert len(_runs(np.c_[np.linspace(0, 50, 12), np.zeros(12)], direction)) == 0
+    assert len(_runs(np.zeros((0, 2)), direction)) == 0
 
 
 def test_plain_association_has_no_velocity_or_kit_gates():
