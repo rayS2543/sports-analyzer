@@ -43,6 +43,17 @@ describe("homography projection", () => {
     expect(offsideShapes(pitch, { lineX: 50 }).band).toBeNull();
     expect(groundCircle(10, 10, 1, 4)[1][1]).toBeCloseTo(11);
   });
+
+  it("does not draw a decision line or an attacker off the pitch", () => {
+    const L = pitch.length_m;
+    const W = pitch.width_m;
+    expect(offsideShapes(pitch, { lineX: 0 }).line).toEqual([[0, 0], [0, W]]);
+    expect(offsideShapes(pitch, { lineX: L }).line).toEqual([[L, 0], [L, W]]);
+    const past = offsideShapes(pitch, { lineX: L + 0.01, uncertainty: 1, attackerX: -0.01 });
+    expect(past.line).toBeNull();
+    expect(past.attacker).toBeNull();
+    expect(past.band.map((p) => p[0])).toEqual([L - 0.99, L, L, L - 0.99]);
+  });
 });
 
 describe("screen mapping", () => {
