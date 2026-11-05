@@ -226,6 +226,88 @@ def test_matches_today_rejects_a_bad_date(client):
 
     assert resp.status_code == 400
     assert resp.get_json()["error"] == "date must be YYYY-MM-DD"
+    assert client.get("/matches/today?date=2026-02-30").status_code == 400
+    assert client.get("/matches/today?date=2026-13-01").status_code == 400
+
+
+def test_matches_today_collapses_one_fixture_and_keeps_a_different_match_that_reuses_the_id(client):
+    day = "2026-10-21"
+
+    def row(home, away, home_score, away_score, kickoff, match_id, code):
+        match = make_match(home, away, home_score, away_score, day)
+        match.update(id=match_id, utcDate=kickoff, status="FINISHED")
+        if code:
+            match["competition"] = {"code": code}
+        return match
+
+    arsenal = row("Arsenal", "Chelsea", 1, 0, f"{day}T15:00:00Z", 100, "PL")
+    nameless = row("", "Everton", 0, 0, f"{day}T15:00:00Z", 101, "PL")
+    wrong_day = row("Liverpool", "Brighton", 2, 1, "2026-10-20T15:00:00Z", 102, "PL")
+    unknown = row("Foo", "Bar", 1, 0, f"{day}T12:00:00Z", 103, "WC")
+    bayern_early = row("FC Bayern München", "Arsenal FC", 1, 0, f"{day}T16:00:00Z", 1, "CL")
+    reversed_fixture = row("Chelsea", "Arsenal", 0, 1, f"{day}T20:00:00Z", 100, "PL")
+    bayern_later = row("Bayern München", "Arsenal", 2, 2, f"{day}T19:00:00Z", 2, "CL")
+    inter = row("Inter", "Barcelona", 1, 0, f"{day}T19:00:00Z", 100, "CL")
+    fotmob_bayern = {
+        "id": 100,
+        "league_code": "CL",
+        "league_name": "Champions League",
+        "home": "Bayern München",
+        "away": "Arsenal",
+        "home_crest": None,
+        "away_crest": None,
+        "home_score": 9,
+        "away_score": 9,
+        "status": "FINISHED",
+        "kickoff": f"{day}T19:00:00Z",
+    }
+    fotmob_real = dict(fotmob_bayern, home="Real Madrid", away="RB Leipzig", home_score=4, away_score=1)
+
+    payload = {
+        "domestic": {"matches": [arsenal, nameless, wrong_day, unknown, bayern_early, reversed_fixture]},
+        "cl": {"matches": [bayern_later, inter]},
+    }
+    with (
+        patch("football_client.requests.get", side_effect=_route_today("", payload)),
+        patch("routes.football.champions_league_fixtures", return_value=[fotmob_bayern, fotmob_real]),
+    ):
+        resp = client.get(f"/matches/today?date={day}")
+
+    assert resp.status_code == 200
+    assert [(m["home"], m["away"], m["id"], m["home_score"]) for m in resp.get_json()] == [
+        ("Arsenal", "Chelsea", 100, 1),
+        ("Bayern München", "Arsenal", 2, 2),
+        ("Inter", "Barcelona", 100, 1),
+        ("Real Madrid", "RB Leipzig", 100, 4),
+        ("Chelsea", "Arsenal", 100, 0),
+    ]
+
+
+def test_matches_today_reports_the_domestic_error_when_the_other_feeds_fail(client):
+    from fotmob_client import FotMobError
+
+    def fake_get(url, **kwargs):
+        status = 403 if url.endswith("/competitions/CL/matches") else 500
+        return FakeResponse({}, status_code=status)
+
+    with (
+        patch("football_client.requests.get", side_effect=fake_get),
+        patch("routes.football.champions_league_fixtures", side_effect=FotMobError("down")),
+    ):
+        resp = client.get("/matches/today?date=2026-10-21")
+
+    assert resp.status_code == 502
+    assert "500" in resp.get_json()["error"]
+
+    kept = dict(make_match("Sevilla", "Valencia", 1, 0, "2026-10-21"), competition={"code": "PD"}, status="FINISHED")
+    with (
+        patch("football_client.requests.get", side_effect=_route_today("", {"domestic": {"matches": [kept]}})),
+        patch("routes.football.champions_league_fixtures", side_effect=FotMobError("down")),
+    ):
+        resp = client.get("/matches/today?date=2026-10-21")
+
+    assert resp.status_code == 200
+    assert [m["home"] for m in resp.get_json()] == ["Sevilla"]
 
 
 def test_matches_today_surfaces_upstream_errors(client):
@@ -630,6 +712,60 @@ def test_form_is_built_from_matches_persisted_by_a_prior_fetch(client):
     assert data["matches_considered"] == 2
     assert data["form"] == "DW"
     assert data["points"] == 4
+
+
+def test_form_counts_a_home_win_and_an_away_win(client):
+    payload = {
+        "matches": [
+            make_match("Real Madrid", "Barcelona", 2, 0, "2024-01-05"),
+            make_match("Sevilla", "Real Madrid", 0, 1, "2024-01-12"),
+        ]
+    }
+
+    with patch("football_client.requests.get", return_value=FakeResponse(payload)):
+        client.get("/matches")
+
+    data = client.get("/analytics/form/Real Madrid").get_json()
+    assert data["form"] == "WW"
+    assert data["points"] == 6
+
+
+def test_a_corrected_score_replaces_the_persisted_result(client):
+    import cache
+
+    first = {"matches": [make_match("Real Madrid", "Barcelona", 1, 0, "2024-01-05")]}
+    with patch("football_client.requests.get", return_value=FakeResponse(first)):
+        client.get("/matches?league=PD")
+    assert client.get("/analytics/form/Real Madrid").get_json()["form"] == "W"
+
+    cache.clear()
+    corrected = {"matches": [make_match("Real Madrid", "Barcelona", 0, 2, "2024-01-05")]}
+    with patch("football_client.requests.get", return_value=FakeResponse(corrected)):
+        client.get("/matches?league=PD")
+
+    data = client.get("/analytics/form/Real Madrid").get_json()
+    assert data["form"] == "L"
+    assert data["points"] == 0
+    assert data["matches"][0]["score"] == "0 - 2"
+    assert data["matches_considered"] == 1
+
+
+def test_form_for_one_league_ignores_the_same_club_in_another(client):
+    def fake_get(url, **kwargs):
+        if "/competitions/CL/" in url:
+            payload = {"matches": [make_match("Real Madrid", "Barcelona", 0, 3, "2024-02-01")]}
+        else:
+            payload = {"matches": [make_match("Real Madrid", "Barcelona", 2, 0, "2024-01-05")]}
+        return FakeResponse(payload)
+
+    with patch("football_client.requests.get", side_effect=fake_get):
+        assert client.get("/matches?league=PD").status_code == 200
+        assert client.get("/matches?league=CL").status_code == 200
+
+    domestic = client.get("/analytics/form/Real Madrid?league=PD").get_json()
+    europe = client.get("/analytics/form/Real Madrid?league=CL").get_json()
+    assert domestic["form"] == "W" and domestic["points"] == 3 and domestic["matches_considered"] == 1
+    assert europe["form"] == "L" and europe["points"] == 0 and europe["matches_considered"] == 1
 
 
 def test_form_respects_the_limit_query_param(client):
