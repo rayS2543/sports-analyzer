@@ -195,6 +195,8 @@ def test_assess_uses_nearest_frame_in_shot(client, env):
     assert any("velocity unavailable" in r for r in result["reasons"])  # v1: no vx
     assert result["feasibility"]["available"] and result["feasibility"]["goalkeeper"] == "located"
     assert client.post("/var/assess", json={**body, "t": 2.15}).json["verdict"] == "inconclusive"
+    # 2.05 sits in the gap between shot 0 (ends at 2.0) and shot 1 (starts at 2.1), so the nearest frame of either shot is used.
+    assert client.post("/var/assess", json={**body, "t": 2.05}).json["frame_t"] == 2.2
     assert client.post("/var/assess", json={**body, "attacking_team": "C"}).status_code == 400
     assert client.post("/var/assess", json={**body, "clip": "1"}).status_code == 404
     assert client.post("/var/assess", json={**body, "end": 6}).status_code == 404
@@ -258,6 +260,35 @@ def test_review_without_passes_explains(client, env, events, text):
     write(env, analysis)
     body = client.post("/var/review", json=REVIEW).json
     assert body["reviews"] == [] and text in body["message"]
+
+
+def test_review_ignores_a_pass_whose_time_is_not_a_number(client, env):
+    write(env, v2_analysis([{"type": "pass", "t": "12", "team": "A", "passer_track_id": 5}, PASS]))
+    reviews = client.post("/var/review", json=REVIEW).json["reviews"]
+    assert [r["event"]["t"] for r in reviews] == [12.0]
+
+
+def test_official_keeps_var_wording_and_drops_a_repeated_event(client):
+    play = lambda id_, slug, text, period, clock, team=None: {
+        "id": id_, "type": {"type": slug}, "text": text, "period": {"number": period},
+        "clock": {"value": clock, "displayValue": f"{clock}'"}, **({"team": {"displayName": team}} if team else {})}
+    data = {"commentary": [
+        {"text": "warmup"},
+        {"text": "x", "play": play("1", "own-goal", "Own Goal by Alba.", 1, 10, "Barcelona")},
+        {"text": "x", "play": play("2", "deleted-after-review", "Goal cancelled.", 1, 20)},
+        {"text": "x", "play": play("3", "foul", "Foul checked by VAR.", 1, 30, "Como")},
+        {"text": "x", "play": play("4", "foul", "Foul by Varela.", 1, 40, "Como")},
+        {"text": "x", "play": play("5", "goal---disallowed", "Disallowed.", 2, 5)},
+        {"text": "x", "play": play("6", "substitution", "Substitution.", 1, 1)},
+    ], "keyEvents": [
+        play("1", "own-goal", "Own Goal by Alba.", 1, 10, "Barcelona"),
+        play("9", "yellow-card", "Card.", 1, 50, "Getafe"),
+    ]}
+    with patch("routes.var_clips.requests.get", return_value=response(data)):
+        events = client.get("/var/official?league=PD&event=748191").json["events"]
+    assert [(e["type"], e["clock"]) for e in events] == [
+        ("goal", "10'"), ("var", "20'"), ("var", "30'"), ("yellow_card", "50'"), ("goal", "5'")]
+    assert events[0]["team"] == "Barcelona" and events[2]["text"] == "Foul checked by VAR."
 
 
 def test_review_errors(client, env):

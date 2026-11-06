@@ -422,3 +422,73 @@ def test_combine_parts_from_another_clip_of_the_event(client, angles):
 def test_uncalibrated_dogso_factors_give_no_lean_even_with_contact():
     dg = var_fouls.assess_incident({"indicators": sfp_ind(), "dogso": {}})["grounds"][2]
     assert dg["verdict"] == "inconclusive" and dg["lean"]["reading"] == "no_lean"
+
+
+def test_replay_time_uses_the_two_nearest_samples_and_ignores_a_bool():
+    # 0.95 is nearer the 1.0/1.1 cluster than the sample at 0, so it is not read off the 0→1 line.
+    mapped = routes._to_live([
+        {"t": 0.0, "live_t": 0.0}, {"t": 1.0, "live_t": 1.0}, {"t": 1.1, "live_t": 5.0},
+    ])
+    assert mapped(0.5) == pytest.approx(0.5) and mapped(0.95) == pytest.approx(-1.0)
+    assert routes._to_live([{"t": 1.0, "live_t": 2.0}, {"t": 1.0, "live_t": 4.0}]) is None
+    assert routes._to_live([{"t": 0.0, "live_t": True}, {"t": 1.0, "live_t": 1.0}]) is None
+    kept = routes._to_live([{"t": 0.0, "live_t": True}, {"t": 1.0, "live_t": 1.0}, {"t": 2.0, "live_t": 3.0}])
+    assert kept(1.0) == pytest.approx(1.0)
+
+
+def test_pairing_keeps_a_contact_at_0_3s_and_assigns_each_end_once(client, data):
+    """0.3 s is inside the tolerance and 0.301 s is not. The closer replay takes a shared live contact;
+    a different team in the same clip cannot, and a sample from another shot cannot move the sync."""
+    clip = data.parent
+    write_window(clip, "1.0-7.0", {"shots": [{"id": 0}], "frames": []}, [
+        contact(1, 3.9996, "A"), contact(5, 4.0, "B"), contact(2, 4.55, "A"), contact(3, 4.551, "A"), contact(4, True, "A"),
+    ])
+    write_window(clip, "23.0-28.0", {
+        "shots": [{"id": 0, "replay_of": {"clip": "44656413", "window": "1.0-7.0"}}, {"id": 1}],
+        "frames": [
+            {"t": 20.0, "shot": 0, "live_t": 2.0}, {"t": 24.0, "shot": 0, "live_t": 6.0},
+            {"t": 22.0, "shot": 0, "live_t": True},  # a boolean is not a time
+            {"t": 22.0, "shot": 1, "live_t": 100.0}, {"t": 22.5, "shot": 1, "live_t": 100.0},
+        ]}, [
+        contact(10, 22.0, "A"), contact(11, 22.25, "A"), contact(12, True, "A"), contact(13, 22.25, "A", shot=1),
+    ])
+    pairs = client.get("/var/fouls/44656413?start=23&end=28").json["suggested_pairs"]
+    assert [(p["replay"]["id"], p["live"]["id"], p["dt_s"]) for p in pairs] == [(10, 1, 0.0), (11, 2, 0.3)]
+    assert pairs[0]["dt_s"] == 0.0 and str(pairs[0]["dt_s"]) != "-0.0"  # 3.9996 − 4.0 rounds through -0.0
+
+
+def test_team_letters_do_not_separate_a_pair_on_another_clip(client, data):
+    clip = data.parent
+    other = clip.parent / "44656500"
+    write_window(other, "1.0-7.0", {"shots": [{"id": 0}], "frames": []}, [contact(1, 4.0, "B")])
+    write_window(clip, "23.0-28.0", {
+        "shots": [{"id": 0, "replay_of": {"clip": "44656500", "window": "1.0-7.0"}}],
+        "frames": [{"t": 20.0, "shot": 0, "live_t": 2.0}, {"t": 24.0, "shot": 0, "live_t": 6.0}],
+    }, [contact(10, 22.0, "A")])
+    pairs = client.get("/var/fouls/44656413?start=23&end=28").json["suggested_pairs"]
+    assert pairs == [{
+        "live": {"clip": "44656500", "start": 1.0, "end": 7.0, "id": 1, "t": 4.0},
+        "replay": {"clip": "44656413", "start": 23.0, "end": 28.0, "id": 10, "t": 22.0}, "dt_s": 0.0,
+    }]
+
+
+def test_a_cross_view_frame_is_not_the_live_camera(client, angles):
+    live = json.loads((angles / LIVE / "analysis.json").read_text())
+    for frame in live["frames"]:
+        frame["calibration"] = {"ok": True, "source": "cross_view"}
+    (angles / LIVE / "analysis.json").write_text(json.dumps(live))
+    got = client.post(COMBINE, json=PAIR).json
+    assert got["crossview_available"] is False and got["crossview_request"] is None
+    live["frames"][0]["calibration"] = {"ok": True, "source": "detected"}
+    (angles / LIVE / "analysis.json").write_text(json.dumps(live))
+    got = client.post(COMBINE, json=PAIR).json
+    assert got["crossview_available"] is True and got["crossview_request"]["live"] == {"clip": "44656413", "start": 1.0, "end": 7.0}
+    assert got["crossview_request"]["start"] == 23.0
+
+
+def test_calibration_of_another_shot_does_not_make_this_contact_uncalibrated(client, angles):
+    replay = json.loads((angles / REPLAY / "fouls.json").read_text())
+    replay["incidents"][0]["shot"] = 1  # id 0, the part PAIR asks to combine; shot 0 stays the uncalibrated one
+    (angles / REPLAY / "fouls.json").write_text(json.dumps(replay))
+    got = client.post(COMBINE, json=PAIR).json
+    assert got["crossview_available"] is False and got["crossview_request"] is None
