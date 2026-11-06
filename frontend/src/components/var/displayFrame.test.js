@@ -50,6 +50,16 @@ describe("displayFrame", () => {
     expect(displayFrame(f0, gappy, 1.05)).toBe(f0);
   });
 
+  it("still interpolates a gap of exactly 1.5 sample intervals", () => {
+    const a = F(0, [P(1, 0, 0)]);
+    const b = F(0.1, [P(1, 10, 0)]);
+    const on = F(0.25, [P(1, 40, 0)]);
+    const past = F(0.26, [P(1, 40, 0)]);
+    expect(displayFrame(b, [a, b, on], 0.175).players[0].x).toBeCloseTo(25, 9);
+    expect(displayFrame(b, [a, b, past], 0.18)).toBe(b);
+    expect(bracket(a, [a, b], NaN)).toBeNull();
+  });
+
   it("never interpolates across shots or into an uncalibrated frame", () => {
     const cut = F(1.1, [P(1, 90, 10)], { shot: 1 });
     expect(displayFrame(f0, [f0, cut, F(1.2, [], { shot: 1 })], 1.05)).toBe(f0);

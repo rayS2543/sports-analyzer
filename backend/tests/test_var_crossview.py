@@ -277,6 +277,18 @@ def test_angles_lists_clips_naming_the_incident_players(client):
     assert sanchez["players"] == ["Manu Sánchez"] and sanchez["clips"] == []  # surname matched; no other clip names him
 
 
+def test_angles_need_the_surname_not_a_first_name_or_a_longer_word(client):
+    extra = [
+        {"id": 11, "headline": "Kylian on the break", "duration": 20, "links": {"source": {"href": SOURCE}}},
+        {"id": 12, "headline": "Mbapped in the box", "duration": 20, "links": {"source": {"href": SOURCE}}},
+        {"id": 13, "headline": "Kylian Mbappé from the stands", "duration": 20, "links": {"source": {"href": SOURCE}}},
+    ]
+    with patch("routes.var_clips.requests.get", return_value=response({**EVENT, "videos": EVENT["videos"] + extra})):
+        ids = [c["id"] for c in client.get(f"/var/angles?league=PD&event=704966&clip={CLIP}").json["clips"]]
+    assert "44656500" in ids and "13" in ids
+    assert "11" not in ids and "12" not in ids
+
+
 def test_angles_explains_unknown_players_and_rejects_bad_input(client):
     data = {**EVENT, "videos": EVENT["videos"] + [{"id": 1, "headline": "Highlights", "links": {"source": {"href": SOURCE}}}]}
     with patch("routes.var_clips.requests.get", return_value=response(data)):
