@@ -215,6 +215,16 @@ def player(tid, team, x, y, bbox, role="player"):
     return {"track_id": tid, "team": team, "role": role, "x": x, "y": y, "bbox": bbox}
 
 
+def test_hits_half_a_second_apart_are_one_foul_and_the_next_step_is_two():
+    def pair(t):
+        return frame(t, [player(1, "A", 50, 30, [0, 0, 10, 40]), player(2, "B", 50.5, 30, [20, 0, 30, 40])])
+
+    one, total = fouls.find_candidates({"frames": [pair(10.0), pair(10.5)]})
+    assert total == 1 and one[0]["hits"] == 2 and one[0]["t1"] - one[0]["t0"] == pytest.approx(0.5)
+    two, total = fouls.find_candidates({"frames": [pair(10.0), pair(10.501)]})
+    assert total == 2 and sorted(c["hits"] for c in two) == [1, 1]
+
+
 def test_candidates_merge_runs_and_exclude_team_mates_and_referees():
     frames = []
     for i in range(10):

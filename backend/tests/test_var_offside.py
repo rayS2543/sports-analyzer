@@ -185,6 +185,38 @@ def test_direction_not_inferable_is_inconclusive():
     assert result["verdict"] == "inconclusive" and result["attack_direction"] is None
 
 
+def _directed(keeper_x=None, defenders=(), attacker_x=20.0, ball_x=40.0):
+    players = [player(7, "A", attacker_x)]
+    players += [player(i, "B", x) for i, x in enumerate(defenders, start=3)]
+    if keeper_x is not None:
+        players.append(player(1, "B", keeper_x, role="goalkeeper"))
+    return {"t": 1.0, "calibration": {"ok": True, "reprojection_error_m": 0.4},
+            "ball": {"x": ball_x, "y": 30.0, "airborne": False}, "players": players}
+
+
+def test_keeper_on_the_halfway_line_defends_the_left_goal():
+    # x == 52.5 is not the right half. The same attacker is offside toward the left goal and onside toward the right.
+    on_line = assess(_directed(keeper_x=52.5, defenders=(25.0,)), 7, "A")
+    assert on_line["attack_direction"] == "left" and on_line["verdict"] == "offside"
+    into_right = assess(_directed(keeper_x=52.51, defenders=(25.0,)), 7, "A")
+    assert into_right["attack_direction"] == "right" and into_right["verdict"] == "onside"
+
+
+def test_defender_mean_sets_direction_only_past_five_metres():
+    # Halfway is 52.5. A mean exactly 5 m away is still "near halfway"; the next centimetre chooses an end.
+    exact = assess(_directed(defenders=(55.0, 60.0), attacker_x=90.0, ball_x=70.0), 7, "A")
+    assert exact["attack_direction"] is None and exact["verdict"] == "inconclusive"
+    past = assess(_directed(defenders=(55.0, 60.02), attacker_x=90.0, ball_x=70.0), 7, "A")
+    assert past["attack_direction"] == "right" and past["verdict"] == "offside"
+    exact_left = assess(_directed(defenders=(45.0, 50.0), attacker_x=15.0, ball_x=35.0), 7, "A")
+    assert exact_left["attack_direction"] is None and exact_left["verdict"] == "inconclusive"
+    past_left = assess(_directed(defenders=(44.98, 50.0), attacker_x=15.0, ball_x=35.0), 7, "A")
+    assert past_left["attack_direction"] == "left" and past_left["verdict"] == "offside"
+    # One defender, however deep, is not a direction.
+    one = assess(_directed(defenders=(100.0,), attacker_x=90.0, ball_x=70.0), 7, "A")
+    assert one["attack_direction"] is None and one["verdict"] == "inconclusive"
+
+
 # --- the ball's height -----------------------------------------------------------------------------
 
 def with_ball(f, **ball):
@@ -329,6 +361,15 @@ def test_offside_needs_the_picture_to_reach_past_the_second_last_opponent():
     cut_result = assess(cut, 7, "A", "right", view=(1280, 720))
     assert cut_result["verdict"] == "inconclusive" and cut_result["view_room_m"] == pytest.approx(2.0)
     assert any("outside the view" in r for r in cut_result["reasons"])
+
+
+def test_five_metres_of_picture_past_the_line_still_allows_offside():
+    # The view steps by 0.5 m. Exactly 5 m beyond the second-last opponent is enough; 4.5 m is not.
+    enough = assess(looking_right(frame(83.0, keeper=False), 85.0), 7, "A", "right", view=(1280, 720))
+    short = assess(looking_right(frame(83.0, keeper=False), 84.5), 7, "A", "right", view=(1280, 720))
+    assert enough["view_room_m"] == pytest.approx(5.0) and enough["verdict"] == "offside"
+    assert short["view_room_m"] == pytest.approx(4.5) and short["verdict"] == "inconclusive"
+    assert any("needs 5 m" in r for r in short["reasons"])
 
 
 def test_cut_off_view_does_not_block_an_onside_call():
