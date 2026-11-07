@@ -130,6 +130,31 @@ def test_lofted_pass_height_and_landing():
     assert unc[flight].max() < 1.0
 
 
+def _roll(times):
+    """Constant 8 m/s roll. `times` are shot seconds."""
+    return [(round(float(t), 3), (40.0 + 8.0 * t, 20.0 + 2.0 * t, 0.0)) for t in times]
+
+
+def _segments(times):
+    an = make_analysis(_roll(times), np.random.default_rng(1), noise=0.4, cal_m=0.05)
+    ball3d.apply(an)
+    return an["ball3d"]["shots"]["0"]["segments"]
+
+
+def _spans(segments, left_end, right_start):
+    return any(s["t0"] <= left_end + 1e-6 and s["t1"] >= right_start - 1e-6 for s in segments)
+
+
+def test_a_one_second_hole_can_be_one_flight_and_a_longer_hole_cannot():
+    # Detections every 0.1 s, then a hole. 1.0 s is still one flight; 1.1 s must not invent the path between.
+    left = [i / 10 for i in range(6)]
+    joined = _segments(left + [1.5 + i / 10 for i in range(6)])
+    split = _segments(left + [1.6 + i / 10 for i in range(6)])
+    assert _spans(joined, 0.5, 1.5)
+    assert not _spans(split, 0.5, 1.6)
+    assert all(s["model"] == "rolling" for s in joined + split)
+
+
 def test_rolling_ball_stays_on_ground():
     traj = []
     for t in np.arange(0, 3.0, 0.1):
