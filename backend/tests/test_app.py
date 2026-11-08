@@ -221,6 +221,65 @@ def test_matches_today_uses_fotmob_when_football_data_has_no_ucl_access(client):
     assert [m["home"] for m in resp.get_json()] == ["FC Bayern München"]
 
 
+def test_matches_today_keys_on_the_fixture_not_the_provider_id(client):
+    """Provider ids are not a fixture identity.
+
+    football-data.org and FotMob number matches independently, so a shared id
+    must not drop one of them. The same Champions League fixture can also
+    arrive twice, under two ids, and must stay a single row — the later feed
+    wins, matched on league, normalized club names, and kickoff day.
+    """
+    premier = dict(
+        make_match("Arsenal", "Chelsea", None, None, "2026-10-21"),
+        id=100,
+        competition={"code": "PL"},
+        status="TIMED",
+    )
+    premier["utcDate"] = "2026-10-21T14:00:00Z"
+    first_copy = dict(
+        make_match("Arsenal FC", "Bayern Munich", 1, 0, "2026-10-21"),
+        id=501,
+        competition={"code": "CL"},
+        status="IN_PLAY",
+    )
+    first_copy["utcDate"] = "2026-10-21T19:00:00Z"
+    later_copy = dict(
+        make_match("Arsenal", "Bayern Munich", 2, 1, "2026-10-21"),
+        id=902,
+        status="IN_PLAY",
+    )
+    later_copy["utcDate"] = "2026-10-21T19:00:00Z"
+    fotmob = {
+        "id": 100,
+        "league_code": "CL",
+        "league_name": "Champions League",
+        "home": "Real Madrid",
+        "away": "RB Leipzig",
+        "home_crest": None,
+        "away_crest": None,
+        "home_score": 4,
+        "away_score": 1,
+        "status": "FINISHED",
+        "kickoff": "2026-10-21T16:45:00Z",
+    }
+
+    with (
+        patch(
+            "football_client.requests.get",
+            side_effect=_route_today("", {"domestic": {"matches": [premier, first_copy]}, "cl": {"matches": [later_copy]}}),
+        ),
+        patch("routes.football.champions_league_fixtures", return_value=[fotmob]),
+    ):
+        resp = client.get("/matches/today?date=2026-10-21")
+
+    assert resp.status_code == 200
+    assert [(m["home"], m["away"], m["league_code"], m["id"], m["home_score"]) for m in resp.get_json()] == [
+        ("Arsenal", "Chelsea", "PL", 100, None),
+        ("Real Madrid", "RB Leipzig", "CL", 100, 4),
+        ("Arsenal", "Bayern Munich", "CL", 902, 2),
+    ]
+
+
 def test_matches_today_rejects_a_bad_date(client):
     resp = client.get("/matches/today?date=21-10-2026")
 
