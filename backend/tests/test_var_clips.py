@@ -107,3 +107,59 @@ def test_discover_finds_var_offside_reviews_from_commentary_and_attaches_a_named
         result = client.get("/var/discover?league=PD&from=2026-09-04&to=2026-09-04")
     reviews = result.json["reviews"]
     assert [(r["minute"], r["player"], r["outcome"], r["clip"] and r["clip"]["id"]) for r in reviews] == [("87'", "Carlos Esp\u00ed", "goal ruled out", "1")]
+
+
+def test_var_review_merges_stoppage_time_and_attaches_only_a_named_incident_clip():
+    """A VAR check and the offside call in the same minute are one review, including 90'+2.
+
+    The clip is a guess from the headline: accents fold, a recap or a clip that
+    names someone else is not attached, and a later overturn beats an earlier
+    'goal stands' line.
+    """
+    from routes.var_clips import var_incidents
+
+    commentary = [
+        {"text": "VAR Decision: Goal Barcelona 1-0 Getafe.", "time": {"displayValue": "90'"}},
+        {"text": "Offside, Barcelona. Fran Garc\u00eda is caught offside.", "time": {"displayValue": "90'+2"}},
+        {"text": "Offside, Getafe. Borja Mayoral is caught offside.", "time": {"displayValue": "12'"}},
+        {"text": "GOAL OVERTURNED BY VAR: Borja Mayoral (Getafe) scores but the goal is ruled out after a VAR review.", "time": {"displayValue": "12'"}},
+        {"text": "VAR Decision: Goal stands.", "time": {"displayValue": "12'"}},
+    ]
+    clips = [
+        {"id": "highlight", "title": "Garcia goal - match highlights", "duration_seconds": 50, "source_url": "https://espnmedia-cdn.akamaized.net/h.mp4"},
+        {"id": "ok", "title": "Garcia's goal stands after the check", "duration_seconds": 48, "source_url": "https://espnmedia-cdn.akamaized.net/ok.mp4"},
+        {"id": "long", "title": "Mayoral goal ruled out", "duration_seconds": 180, "source_url": "https://espnmedia-cdn.akamaized.net/long.mp4"},
+        {"id": "other", "title": "Mbappe misses a penalty", "duration_seconds": 36, "source_url": "https://espnmedia-cdn.akamaized.net/m.mp4"},
+        {"id": "nosrc", "title": "Mayoral is offside", "duration_seconds": 40, "source_url": None},
+    ]
+
+    with patch("routes.var_clips._get", return_value={"commentary": commentary}):
+        reviews = var_incidents("PD", "9", clips)
+
+    assert [(r["minute"], r["outcome"], r["player"], (r["clip"] or {}).get("id")) for r in reviews] == [
+        ("90'", "goal confirmed", "Fran Garc\u00eda", "ok"),
+        ("12'", "goal ruled out", "Borja Mayoral", None),
+    ]
+
+
+def test_discover_keeps_other_matches_when_one_event_fails(client):
+    def video(i, title, seconds):
+        return {"id": i, "headline": title, "duration": seconds, "links": {"source": {"href": f"https://espnmedia-cdn.akamaized.net/{i}.mp4"}}}
+
+    def fake_get(url, params=None, timeout=None):
+        if url.endswith("/scoreboard"):
+            return response({"events": [
+                {"id": "bad", "name": "Broken", "competitions": [{"status": {"type": {"state": "post"}}}]},
+                {"id": "ok", "name": "Good", "competitions": [{"status": {"type": {"state": "post"}}}]},
+            ]})
+        if (params or {}).get("event") == "bad":
+            raise requests.Timeout("slow")
+        return response({"videos": [video(1, "Goal wiped off by VAR", 40)], "commentary": []})
+
+    with patch("routes.var_clips.requests.get", side_effect=fake_get):
+        result = client.get("/var/discover?league=PD&from=2026-03-01&to=2026-03-01")
+
+    assert result.status_code == 200
+    assert result.json["events_failed"] == 1
+    assert [(c["event"], c["id"]) for c in result.json["clips"]] == [("ok", "1")]
+    assert result.json["reviews"] == []

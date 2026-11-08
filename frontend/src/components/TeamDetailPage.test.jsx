@@ -116,6 +116,37 @@ describe("TeamDetailPage", () => {
     expect(fetch.mock.calls.some(([url]) => /name=Real(\+|%20)Madrid(\+|%20)CF/.test(String(url)))).toBe(true);
   });
 
+  it("shows this club's Elo from the league ratings", async () => {
+    fetch.mockImplementation((url) => {
+      const href = String(url);
+      if (href.includes("/teams/detail")) {
+        return Promise.resolve({ json: async () => sampleTeam });
+      }
+      if (href.includes("/matches/detail")) {
+        return Promise.resolve({ json: async () => ({ available: false }) });
+      }
+      if (href.includes("/ratings")) {
+        return Promise.resolve({
+          json: async () => ({
+            ratings: [
+              { team: "Barcelona", rating: 1900, rank: 1, delta: 40 },
+              { team: "Real Madrid CF", rating: 1842, rank: 2, delta: -12 },
+            ],
+          }),
+        });
+      }
+      return Promise.resolve({ json: async () => ({}) });
+    });
+
+    renderPage();
+
+    expect(await screen.findByText("Elo 1842")).toBeInTheDocument();
+    expect(screen.getByText("#2")).toBeInTheDocument();
+    expect(screen.getByText("-12")).toBeInTheDocument();
+    expect(screen.queryByText("Elo 1900")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Full table" })).toHaveAttribute("href", "/elo?league=PD");
+  });
+
   it("shows an error when the backend returns one", async () => {
     fetch.mockImplementation(() => Promise.resolve({ json: async () => ({ error: "Team not found" }) }));
 
