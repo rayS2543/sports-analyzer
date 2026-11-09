@@ -107,3 +107,64 @@ def test_discover_finds_var_offside_reviews_from_commentary_and_attaches_a_named
         result = client.get("/var/discover?league=PD&from=2026-09-04&to=2026-09-04")
     reviews = result.json["reviews"]
     assert [(r["minute"], r["player"], r["outcome"], r["clip"] and r["clip"]["id"]) for r in reviews] == [("87'", "Carlos Esp\u00ed", "goal ruled out", "1")]
+
+
+def test_discover_attaches_only_a_short_incident_clip_and_keeps_going_when_one_event_fails(client):
+    commentary = [
+        {"text": "Offside, Barcelona. Kylian Mbapp\u00e9 is caught offside.", "time": {"displayValue": "12'"}},
+        {"text": "VAR Decision: Goal Barcelona 1-0 Getafe.", "time": {"displayValue": "12'"}},
+        {"text": "Offside, Barcelona. Robert Lewandowski is caught offside.", "time": {"displayValue": "70'"}},
+        {"text": "GOAL OVERTURNED BY VAR: Robert Lewandowski (Barcelona) scores but the goal is ruled out after a VAR review.", "time": {"displayValue": "70'"}},
+        {"text": "VAR Decision: No Goal Sevilla 0-0 Real Madrid.", "time": {"displayValue": "33'"}},
+    ]
+    videos = [
+        {"id": 9, "headline": "Kylian scores a belter", "duration": 30, "links": {"source": {"href": "https://espnmedia-cdn.akamaized.net/9.mp4"}}},
+        {"id": 11, "headline": "Mbappe goal stands after the check", "duration": 42, "links": {"source": {"href": "https://espnmedia-cdn.akamaized.net/11.mp4"}}},
+        {"id": 12, "headline": "Mbapp\u00e9 every goal", "duration": 400, "links": {"source": {"href": "https://espnmedia-cdn.akamaized.net/12.mp4"}}},
+        {"id": 13, "headline": "Lewandowski highlights", "duration": 80, "links": {"source": {"href": "https://espnmedia-cdn.akamaized.net/13.mp4"}}},
+    ]
+
+    def fake_get(url, params=None, timeout=None):
+        if url.endswith("/scoreboard"):
+            return response({"events": [
+                {"id": "1", "name": "Getafe at Barcelona", "competitions": [{"status": {"type": {"state": "post"}}}]},
+                {"id": "2", "name": "Sevilla at Real Madrid", "competitions": [{"status": {"type": {"state": "post"}}}]},
+            ]})
+        if (params or {}).get("event") == "2":
+            raise requests.Timeout("down")
+        return response({"videos": videos, "commentary": commentary})
+
+    with patch("routes.var_clips.requests.get", side_effect=fake_get):
+        result = client.get("/var/discover?league=PD&from=2026-09-04&to=2026-09-04")
+
+    assert result.status_code == 200
+    reviews = result.json["reviews"]
+    assert [(r["minute"], r["player"], r["outcome"], r["clip"] and r["clip"]["id"]) for r in reviews] == [
+        ("12'", "Kylian Mbapp\u00e9", "goal confirmed", "11"),
+        ("70'", "Robert Lewandowski", "goal ruled out", None),
+    ]
+    assert result.json["events_failed"] == 1
+
+
+def test_clip_urls_drop_credentials_odd_ports_and_other_hosts(client):
+    data = {"videos": [
+        {"id": 1, "headline": "a", "duration": 10, "links": {
+            "source": {"href": "https://user:pass@espnmedia-cdn.akamaized.net/a.mp4"},
+            "web": {"href": "https://www.espn.com/video/clip?id=1"},
+        }},
+        {"id": 2, "headline": "b", "duration": 10, "links": {"source": {"href": "https://espnmedia-cdn.akamaized.net:8443/b.mp4"}}},
+        {"id": 3, "headline": "c", "duration": 10, "links": {
+            "source": {"href": "https://evil.example/c.mp4"},
+            "web": {"href": "https://espn.com.evil/clip"},
+        }},
+    ]}
+    with patch("routes.var_clips.requests.get", return_value=response(data)):
+        clips = client.get("/var/clips?league=PD&event=42").json["clips"]
+
+    assert clips == [{
+        "id": "1",
+        "title": "a",
+        "duration_seconds": 10,
+        "source_url": None,
+        "page_url": "https://www.espn.com/video/clip?id=1",
+    }]
