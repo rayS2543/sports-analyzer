@@ -81,10 +81,12 @@ def var_incidents(league, event_id, clips_of_event):
     player and it is short enough to be one incident; that match is a guess from the headline, not checked."""
     by_minute = {}
     for line in _get(league, "summary", event=event_id).get("commentary") or []:
-        text, minute = line.get("text") or "", ((line.get("time") or {}).get("displayValue") or "")
+        # Full displayed clock: ESPN writes stoppage as "45'+6'", and the text
+        # before the first apostrophe is "45", the same as the 45th minute.
+        text, minute = line.get("text") or "", ((line.get("time") or {}).get("displayValue") or "").strip()
         if not minute:
             continue
-        slot = by_minute.setdefault(minute.split("'")[0], {"minute": minute, "overturned": False, "confirmed": False, "offside": False, "player": None})
+        slot = by_minute.setdefault(minute, {"minute": minute, "overturned": False, "confirmed": False, "offside": False, "player": None})
         if OVERTURNED.search(text):
             slot["overturned"], scorer = True, SCORER.search(text)
             slot["player"] = slot["player"] or (scorer.group(1).strip() if scorer else None)
