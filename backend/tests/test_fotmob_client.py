@@ -1,3 +1,4 @@
+import requests
 import pytest
 
 import fotmob_client
@@ -83,6 +84,79 @@ def test_champions_league_fixtures_reads_the_league_stage_only(monkeypatch):
             "kickoff": "2026-10-21T19:00:00.000Z",
         }
     ]
+
+
+def _day_match(match_id, home, away, status, score=(0, 0), kickoff="2026-10-21T19:00:00.000Z"):
+    home_side = {"id": 10, "score": score[0]}
+    if home is not None:
+        home_side["name"] = home
+    return {
+        "id": match_id,
+        "home": home_side,
+        "away": {"id": 11, "name": away, "score": score[1]},
+        "status": {"utcTime": kickoff, **status},
+    }
+
+
+def test_champions_league_statuses_and_unplayed_scores(monkeypatch):
+    """A postponed or not-yet-started match must not render as 0-0, and a
+    cancelled match must not be labelled in play."""
+    payload = {
+        "leagues": [
+            {
+                "id": 42,
+                "matches": [
+                    _day_match(1, "Bayern München", "Arsenal", {"finished": True}, (2, 1)),
+                    _day_match(2, "Tomorrow FC", "Other", {"cancelled": True, "reason": {"shortKey": "postponed"}}),
+                    _day_match(3, "Gone FC", "Club", {"cancelled": True}),
+                    _day_match(4, "Live FC", "Side", {"ongoing": True, "started": True}, (1, 0)),
+                    _day_match(5, "Later FC", "Side", {}),
+                    _day_match(6, None, "Nobody", {"finished": True}, (1, 1)),
+                    _day_match(7, "Awarded FC", "Side", {"awarded": True, "finished": True}, (3, 0)),
+                ],
+            }
+        ]
+    }
+
+    class Response:
+        ok = True
+        status_code = 200
+
+        def json(self):
+            return payload
+
+    monkeypatch.setattr(fotmob_client.requests, "get", lambda *args, **kwargs: Response())
+    fixtures = {row["id"]: row for row in fotmob_client.champions_league_fixtures("2026-10-21")}
+
+    assert set(fixtures) == {1, 2, 3, 4, 5, 7}
+    assert (fixtures[1]["status"], fixtures[1]["home_score"], fixtures[1]["away_score"]) == ("FINISHED", 2, 1)
+    assert (fixtures[2]["status"], fixtures[2]["home_score"], fixtures[2]["away_score"]) == ("POSTPONED", None, None)
+    assert fixtures[3]["status"] == "CANCELLED"
+    assert (fixtures[4]["status"], fixtures[4]["home_score"]) == ("IN_PLAY", 1)
+    assert (fixtures[5]["status"], fixtures[5]["home_score"], fixtures[5]["away_score"]) == ("TIMED", None, None)
+    assert (fixtures[7]["status"], fixtures[7]["home_score"]) == ("FINISHED", 3)
+
+
+def test_champions_league_fixtures_fail_closed(monkeypatch):
+    def boom(*args, **kwargs):
+        raise requests.exceptions.Timeout("slow")
+
+    monkeypatch.setattr(fotmob_client.requests, "get", boom)
+    with pytest.raises(fotmob_client.FotMobError) as timeout:
+        fotmob_client.champions_league_fixtures("2026-10-21")
+    assert timeout.value.status_code == 502
+
+    class BadJson:
+        ok = True
+        status_code = 200
+
+        def json(self):
+            raise ValueError("not json")
+
+    monkeypatch.setattr(fotmob_client.requests, "get", lambda *args, **kwargs: BadJson())
+    with pytest.raises(fotmob_client.FotMobError) as parsed:
+        fotmob_client.champions_league_fixtures("2026-10-21")
+    assert parsed.value.status_code == 502
 
 
 def test_accents_normalize_without_merging_different_clubs():
