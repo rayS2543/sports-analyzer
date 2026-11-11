@@ -775,3 +775,98 @@ def test_team_detail_returns_roster_form_and_fixtures(client):
     form_resp = client.get("/analytics/form/Real%20Madrid%20CF?league=PD")
     assert form_resp.status_code == 200
     assert form_resp.get_json()["form"] == "W"
+
+
+def test_team_detail_prefers_an_exact_name_over_another_clubs_short_name(client):
+    teams_payload = {
+        "teams": [
+            {"id": 86, "name": "Real Madrid CF", "shortName": "Los Blancos", "tla": "RMA", "crest": "rma.png"},
+            {"id": 1, "name": "Real Madrid", "shortName": "Castilla", "tla": "RMC", "crest": "c.png"},
+        ]
+    }
+    squad = [
+        {"id": 3, "name": "Benzema", "position": "Offence", "shirtNumber": 9},
+        {"id": 1, "name": "Courtois", "position": "Goalkeeper", "shirtNumber": 1},
+        {"id": 4, "name": "Modric", "position": "Midfield", "shirtNumber": None},
+        {"id": 5, "name": "Kroos", "position": "Midfield", "shirtNumber": 8},
+        {"id": 2, "name": "No Number Keeper", "position": "Goalkeeper"},
+        {"id": 6, "name": "Unknown Role", "position": "Coach"},
+    ]
+
+    def fake_get(url, headers=None, params=None, timeout=10):
+        if url.endswith("/competitions/PD/teams"):
+            return FakeResponse(teams_payload)
+        if url.endswith("/teams/86"):
+            return FakeResponse({"id": 86, "name": "Real Madrid CF", "coach": {"nationality": "Italy"}, "squad": squad})
+        if url.endswith("/teams/1"):
+            return FakeResponse({"id": 1, "name": "Real Madrid", "squad": []})
+        if "/matches" in url:
+            return FakeResponse({"matches": []})
+        if url.endswith("/standings"):
+            return FakeResponse({"standings": [{"type": "TOTAL", "table": [{"team": {"name": "Someone Else"}}]}]})
+        raise AssertionError(url)
+
+    with patch("football_client.requests.get", side_effect=fake_get):
+        exact = client.get("/teams/detail?league=PD&name=Real%20Madrid").get_json()
+        short = client.get("/teams/detail?league=PD&name=los%20blancos").get_json()
+        reserve = client.get("/teams/detail?league=PD&name=Castilla").get_json()
+
+    assert exact["id"] == 1
+    assert reserve["id"] == 1
+    assert short["id"] == 86
+    assert short["coach"] is None
+    assert short["standing"] is None
+    assert [player["name"] for player in short["squad"]] == [
+        "Courtois",
+        "No Number Keeper",
+        "Kroos",
+        "Modric",
+        "Benzema",
+        "Unknown Role",
+    ]
+
+
+def test_team_detail_keeps_other_competitions_out_of_league_form(client):
+    teams_payload = {
+        "teams": [
+            {"id": 86, "name": "Real Madrid CF", "shortName": "Los Blancos", "tla": "RMA", "crest": "rma.png"},
+        ]
+    }
+    league_win = make_match("Real Madrid CF", "Barcelona", 2, 1, "2024-01-10")
+    league_win["competition"] = {"code": "PD"}
+    league_draw = make_match("Barcelona", "Real Madrid CF", 0, 0, "2024-01-05")
+    league_draw["competition"] = {"code": "PD"}
+    europe_loss = make_match("Man City", "Real Madrid CF", 3, 1, "2024-01-17")
+    europe_loss["competition"] = {"code": "CL"}
+    scoreless = make_match("Real Madrid CF", "Getafe", None, None, "2024-01-18")
+    scoreless["competition"] = {"code": "PD"}
+    later = make_match("Sevilla", "Real Madrid CF", None, None, "2024-02-02")
+    later["status"] = "SCHEDULED"
+    sooner = make_match("Real Madrid CF", "Valencia", None, None, "2024-02-01")
+    sooner["status"] = "TIMED"
+
+    def fake_get(url, headers=None, params=None, timeout=10):
+        if url.endswith("/competitions/PD/teams"):
+            return FakeResponse(teams_payload)
+        if url.endswith("/teams/86"):
+            return FakeResponse({"id": 86, "name": "Real Madrid CF", "squad": []})
+        if url.endswith("/teams/86/matches"):
+            if params and params.get("status") == "FINISHED":
+                return FakeResponse({"matches": [league_win, scoreless, europe_loss, league_draw]})
+            return FakeResponse({"matches": [later, sooner]})
+        if url.endswith("/standings"):
+            return FakeResponse({"standings": []})
+        raise AssertionError(url)
+
+    with patch("football_client.requests.get", side_effect=fake_get):
+        data = client.get("/teams/detail?league=PD&name=Los%20Blancos").get_json()
+
+    assert [match["home"] for match in data["recent_matches"]] == ["Man City", "Real Madrid CF", "Barcelona"]
+    assert data["form"] == "LWD"
+    assert data["form_points"] == 4
+    assert [match["date"] for match in data["upcoming_matches"]] == ["2024-02-01", "2024-02-02"]
+
+    form = client.get("/analytics/form/Real%20Madrid%20CF?league=PD").get_json()
+    assert form["form"] == "WD"
+    assert form["matches_considered"] == 2
+    assert client.get("/analytics/form/Real%20Madrid%20CF?league=CL").status_code == 404

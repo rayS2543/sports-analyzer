@@ -50,6 +50,37 @@ def test_no_footage_is_distinct_from_provider_failure(client):
         assert client.get("/var/clips?event=43").status_code == 502
 
 
+def test_clip_urls_stay_on_the_espn_hosts(client):
+    def video(clip_id, source=None, page=None):
+        links = {}
+        if source is not None:
+            links["source"] = {"href": source}
+        if page is not None:
+            links["web"] = {"href": page}
+        return {"id": clip_id, "headline": "clip", "duration": 10, "links": links}
+
+    cdn = "https://espnmedia-cdn.akamaized.net/ok.mp4"
+    data = {"videos": [
+        video(1, source=cdn, page="https://www.espn.com/video/1"),
+        video(2, source="https://evil.example/ok.mp4"),
+        video(3, source="https://user:pass@espnmedia-cdn.akamaized.net/ok.mp4"),
+        video(4, source="https://espnmedia-cdn.akamaized.net:8443/ok.mp4"),
+        video(5, page="https://espn.com.evil.test/video"),
+        video(6, page="https://ESPN.com/video/6"),
+        video(7, source="https://espnmedia-cdn.akamaized.net.evil.com/ok.mp4"),
+        video(8, source=f"{cdn}?sig=1"),
+    ]}
+    with patch("routes.var_clips.requests.get", return_value=response(data)):
+        result = client.get("/var/clips?league=PD&event=748192")
+
+    clips = result.json["clips"]
+    assert [(c["id"], c["source_url"], c["page_url"]) for c in clips] == [
+        ("1", cdn, "https://www.espn.com/video/1"),
+        ("6", None, "https://ESPN.com/video/6"),
+        ("8", f"{cdn}?sig=1", None),
+    ]
+
+
 def test_classify_separates_recaps_from_single_incidents():
     from routes.var_clips import classify
     assert classify("Real Madrid's opener wiped off by VAR", 48) == "offside"
