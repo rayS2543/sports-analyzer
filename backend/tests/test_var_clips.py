@@ -107,3 +107,70 @@ def test_discover_finds_var_offside_reviews_from_commentary_and_attaches_a_named
         result = client.get("/var/discover?league=PD&from=2026-09-04&to=2026-09-04")
     reviews = result.json["reviews"]
     assert [(r["minute"], r["player"], r["outcome"], r["clip"] and r["clip"]["id"]) for r in reviews] == [("87'", "Carlos Esp\u00ed", "goal ruled out", "1")]
+
+
+def test_discover_attaches_a_clip_only_when_the_headline_can_name_the_offside_player(client):
+    """A VAR check counts only at the minute of an offside call. The player comes from that
+    call when the VAR line does not name anyone. A headline that names them is still skipped
+    when it is a recap or too long to be one incident, and one event failing leaves the rest."""
+    def line(text, minute):
+        return {"text": text, "time": {"displayValue": minute} if minute else {}}
+
+    def video(i, title, seconds, href):
+        return {"id": i, "headline": title, "duration": seconds, "links": {"source": {"href": href}}}
+
+    by_event = {
+        "sevilla": {
+            "commentary": [
+                line("Offside, Sevilla. Mayoral is caught offside.", "12'"),
+                line("VAR Decision: No Goal Sevilla.", "12'"),
+                line("VAR Decision: No Goal Getafe.", "80'"),
+                line("Offside, Sevilla. Someone else is caught offside.", None),
+            ],
+            "videos": [video(20, "Mayoral ruled out after VAR", 400, "https://espnmedia-cdn.akamaized.net/20.mp4")],
+        },
+        "villarreal": {
+            "commentary": [
+                line("Offside, Villarreal. Gerard Moreno is caught offside.", "33'"),
+                line("Goal confirmed after a VAR review.", "33'"),
+                line("Offside, Villarreal. Ayoze Perez is caught offside.", "71'"),
+            ],
+            "videos": [video(30, "Gerard Moreno goal confirmed", 44, "https://espnmedia-cdn.akamaized.net/30.mp4")],
+        },
+        "barcelona": {
+            "commentary": [
+                line("Offside, Barcelona. Ferran Torres is caught offside.", "54'"),
+                line("VAR Decision: Goal Barcelona 1-0 Getafe.", "54'"),
+            ],
+            "videos": [
+                video(10, "Ferran Torres highlights", 40, "https://espnmedia-cdn.akamaized.net/10.mp4"),
+                video(11, "Ferran Torres goal stands", 36, "https://espnmedia-cdn.akamaized.net/11.mp4"),
+            ],
+        },
+    }
+
+    def fake_get(url, params=None, timeout=None):
+        if url.endswith("/scoreboard"):
+            day = params["dates"]
+            if day == "20260301":
+                events = [("sevilla", "Sevilla at Betis"), ("villarreal", "Villarreal at Valencia")]
+            else:
+                events = [("barcelona", "Getafe at Barcelona"), ("broken", "Broken feed")]
+            return response({"events": [{"id": i, "name": name, "competitions": [{"status": {"type": {"state": "post"}}}]} for i, name in events]
+                             + [{"id": "live", "name": "Live", "competitions": [{"status": {"type": {"state": "in"}}}]}]})
+        if params["event"] == "broken":
+            raise requests.Timeout("espn down")
+        return response(by_event[params["event"]])
+
+    with patch("routes.var_clips.requests.get", side_effect=fake_get):
+        result = client.get("/var/discover?league=PD&from=2026-03-01&to=2026-03-02")
+        foul = client.get("/var/discover?league=PD&from=2026-03-01&to=2026-03-02&kind=foul")
+
+    assert result.status_code == 200
+    assert result.json["events_failed"] == 1
+    assert [(r["date"], r["minute"], r["player"], r["outcome"], r["clip"] and r["clip"]["id"]) for r in result.json["reviews"]] == [
+        ("2026-03-02", "54'", "Ferran Torres", "goal confirmed", "11"),
+        ("2026-03-01", "33'", "Gerard Moreno", "goal confirmed", "30"),
+        ("2026-03-01", "12'", "Mayoral", "goal ruled out", None),
+    ]
+    assert foul.status_code == 200 and foul.json["reviews"] == []
