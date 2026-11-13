@@ -25,6 +25,16 @@ def test_missing_coverage_and_invalid_positions():
     assert matches_detail._build_shots({"shots": []}) == []
     team = matches_detail._build_team({"starters": [{"verticalLayout": {"x": -1, "y": 0.5}}]})
     assert team["starters"][0]["pitch_position"] is None
+    # bool is an int in Python, and NaN compares false in a way that must not plot.
+    shots = matches_detail._build_shots({"shots": [
+        {"x": True, "y": 10, "id": 1},
+        {"x": 10, "y": float("nan"), "id": 2},
+        {"x": float("inf"), "y": 10, "id": 3},
+        {"x": 0, "y": 0, "id": 4},
+        {"x": 105, "y": 68, "id": 5},
+        {"x": 105.1, "y": 34, "id": 6},
+    ]})
+    assert [shot["id"] for shot in shots] == [4, 5]
 
 
 def test_match_assets_reuse_the_existing_page_fetch(monkeypatch):

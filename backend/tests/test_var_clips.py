@@ -107,3 +107,56 @@ def test_discover_finds_var_offside_reviews_from_commentary_and_attaches_a_named
         result = client.get("/var/discover?league=PD&from=2026-09-04&to=2026-09-04")
     reviews = result.json["reviews"]
     assert [(r["minute"], r["player"], r["outcome"], r["clip"] and r["clip"]["id"]) for r in reviews] == [("87'", "Carlos Esp\u00ed", "goal ruled out", "1")]
+
+
+def test_discover_joins_stoppage_time_and_refuses_the_wrong_clip(client):
+    commentary = [
+        {"text": "Offside, Real Madrid. Carlos Espí is caught offside.", "time": {"displayValue": "87'"}},
+        {"text": "GOAL OVERTURNED BY VAR: Carlos Espí (Real Madrid) scores but the goal is ruled out after a VAR review.", "time": {"displayValue": "87'+2"}},
+        {"text": "Offside, Barcelona. Lamine Yamal is caught offside.", "time": {"displayValue": "20'"}},
+        {"text": "VAR Decision: Goal Barcelona 1-0 Getafe.", "time": {"displayValue": "20'"}},
+    ]
+    videos = [
+        {"id": 2, "headline": "Carlos Espi every goal", "duration": 40, "links": {"source": {"href": "https://espnmedia-cdn.akamaized.net/2.mp4"}}},
+        {"id": 1, "headline": "Carlos Espi's bicycle kick ruled out", "duration": 58, "links": {"source": {"href": "https://espnmedia-cdn.akamaized.net/1.mp4"}}},
+        {"id": 3, "headline": "Lamine Yamal goal stands", "duration": 40, "links": {"source": {"href": "https://espnmedia-cdn.akamaized.net/3.mp4"}}},
+        {"id": 4, "headline": "Someone else sent off", "duration": 30, "links": {"source": {"href": "https://espnmedia-cdn.akamaized.net/4.mp4"}}},
+    ]
+
+    def fake_get(url, params=None, timeout=None):
+        if url.endswith("/scoreboard"):
+            return response({"events": [{"id": "9", "name": "Real Betis vs Real Madrid", "competitions": [{"status": {"type": {"state": "post"}}}]}]})
+        return response({"videos": videos, "commentary": commentary})
+
+    with patch("routes.var_clips.requests.get", side_effect=fake_get):
+        result = client.get("/var/discover?league=PD&from=2026-09-04&to=2026-09-04&kind=all")
+
+    assert result.status_code == 200
+    reviews = result.json["reviews"]
+    assert [(r["minute"], r["player"], r["outcome"], r["clip"]["id"]) for r in reviews] == [
+        ("87'", "Carlos Espí", "goal ruled out", "1"),
+        ("20'", "Lamine Yamal", "goal confirmed", "3"),
+    ]
+    attached = {c["id"] for c in result.json["clips"]}
+    assert "2" not in attached
+    assert attached == {"1", "3", "4"}
+
+
+def test_discover_keeps_the_other_matches_when_one_event_fails(client):
+    def fake_get(url, params=None, timeout=None):
+        if url.endswith("/scoreboard"):
+            return response({"events": [
+                {"id": "ok", "name": "Good", "competitions": [{"status": {"type": {"state": "post"}}}]},
+                {"id": "bad", "name": "Bad", "competitions": [{"status": {"type": {"state": "post"}}}]},
+            ]})
+        if (params or {}).get("event") == "bad":
+            raise requests.Timeout("slow")
+        return response({"videos": [{"id": 1, "headline": "Goal wiped off by VAR", "duration": 40, "links": {"source": {"href": "https://espnmedia-cdn.akamaized.net/1.mp4"}}}], "commentary": []})
+
+    with patch("routes.var_clips.requests.get", side_effect=fake_get):
+        result = client.get("/var/discover?league=PD&from=2026-03-01&to=2026-03-01")
+
+    assert result.status_code == 200
+    assert result.json["events_failed"] == 1
+    assert [(c["event"], c["id"]) for c in result.json["clips"]] == [("ok", "1")]
+    assert result.json["reviews"] == []
