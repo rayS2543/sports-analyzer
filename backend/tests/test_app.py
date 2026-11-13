@@ -221,6 +221,71 @@ def test_matches_today_uses_fotmob_when_football_data_has_no_ucl_access(client):
     assert [m["home"] for m in resp.get_json()] == ["FC Bayern München"]
 
 
+def test_matches_today_keys_on_the_fixture_not_provider_ids(client):
+    # football-data.org and FotMob number fixtures independently. The same tie
+    # has to collapse across both football-data feeds even when the ids and
+    # kickoff clocks differ, and a domestic match must survive sharing an id
+    # with a different Champions League fixture.
+    domestic_cl = dict(
+        make_match("PSV", "Sporting Clube de Portugal", None, None, "2026-10-21"),
+        id=4242,
+        competition={"code": "CL"},
+        status="TIMED",
+        utcDate="2026-10-21T16:00:00Z",
+    )
+    competition_feed = dict(
+        make_match("PSV Eindhoven", "Sporting CP", None, None, "2026-10-21"),
+        id=999001,
+        status="TIMED",
+        utcDate="2026-10-21T19:00:00Z",
+    )
+    premier_league = dict(
+        make_match("Arsenal FC", "Chelsea FC", None, None, "2026-10-21"),
+        id=6106238,
+        competition={"code": "PL"},
+        status="TIMED",
+        utcDate="2026-10-21T15:00:00Z",
+    )
+    same_clubs_in_europe = dict(
+        make_match("Arsenal", "Chelsea", None, None, "2026-10-21"),
+        id=6106238,
+        status="TIMED",
+        utcDate="2026-10-21T19:45:00Z",
+    )
+    fotmob_other = {
+        "id": 6106238,
+        "league_code": "CL",
+        "league_name": "Champions League",
+        "home": "Real Madrid",
+        "away": "RB Leipzig",
+        "home_crest": None,
+        "away_crest": None,
+        "home_score": None,
+        "away_score": None,
+        "status": "TIMED",
+        "kickoff": "2026-10-21T19:00:00Z",
+    }
+    fotmob_duplicate = {**fotmob_other, "id": 1, "home": "PSV Eindhoven", "away": "Sporting CP"}
+
+    with (
+        patch(
+            "football_client.requests.get",
+            side_effect=_route_today("", {"domestic": {"matches": [domestic_cl, premier_league]}, "cl": {"matches": [competition_feed, same_clubs_in_europe]}}),
+        ),
+        patch("routes.football.champions_league_fixtures", return_value=[fotmob_other, fotmob_duplicate]),
+    ):
+        resp = client.get("/matches/today?date=2026-10-21")
+
+    assert resp.status_code == 200
+    rows = resp.get_json()
+    assert [(m["league_code"], m["home"], m["away"], m["id"]) for m in rows] == [
+        ("PL", "Arsenal FC", "Chelsea FC", 6106238),
+        ("CL", "PSV Eindhoven", "Sporting CP", 999001),
+        ("CL", "Real Madrid", "RB Leipzig", 6106238),
+        ("CL", "Arsenal", "Chelsea", 6106238),
+    ]
+
+
 def test_matches_today_rejects_a_bad_date(client):
     resp = client.get("/matches/today?date=21-10-2026")
 
