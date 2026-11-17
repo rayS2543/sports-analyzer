@@ -1,0 +1,9 @@
+- 2026-11-17 10:33:27: start. branch cv = sports-analyzer-test/cv (read-only), venv cv/.venv. needed no questions from Ray.
+- 2026-11-17 10:34:15: seeder.py works on POC frame 158678 (y-flip, err 0.089, 0.66 s). Running run_samples.py (52 half samples + 601 molina frames)
+- 2026-11-17 11:06:18: baseline v1: half samples 19/52 verified, molina 536/601 (1419 s total). tried=0 on many failures (no valid triple). inspecting failure frames
+- 2026-11-17 11:10:02: v2 fallback added (generic monotone assignment of horizontal clusters to x-lines both ends/directions + touchlines, ranked by chamfer, top10 refined+gate). 11/12 prior half failures seeded in test. Re-running failures. NOTE: 180deg end ambiguity is inherent to lines (pitch symmetric); to be handled by consistency in coverage pass and graded vs hand-verified H up to symmetry.
+- 2026-11-17 11:22:02: v2 results: half samples 45/52 verified, molina 590/601. starting coverage.py (seed+propagate H1)
+- 2026-11-17 11:30:09: graded vs hand-verified relaunch H (grade.py, grader-side): samples 44 graded median 0.24 m p90 0.70 max 1.52, 3 >1m; molina 295 graded median 0.09 max 0.42. Matches up to rot180 only (27/44 and 141/295 best-sym=rot180, zero mirrors): end identity unresolvable from lines. overlays/ written. coverage.py running (~2.3 min/interval)
+- 2026-11-17 12:25:55: coverage done 98.05% (gap 3287.5-3347.5). LINEFIT_REPORT.md written. running fleet_state.sh
+- 2026-11-17 12:27:04: end-identity fix: orient.py (chain consistency). 2 weak links (3012-3132, 3132-3372: chain drifted, 20-67 m). densify.py seeds every 10 s in weak spans then rerun coverage+orient
+- 2026-11-17 12:36:57: end-identity fix done: chain consistency + densify (15 extra seeds) + molina anchor. graded: 57/57 samples and 295/295 molina same labelling. global bit still outside lines. report updated.
