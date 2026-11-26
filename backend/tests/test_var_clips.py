@@ -21,6 +21,47 @@ def test_discovers_provider_fixture_ids(client):
     assert get.call_args.kwargs["params"] == {"dates": "20250921"}
 
 
+def test_clip_urls_drop_credentials_other_ports_and_lookalike_hosts(client):
+    # The clip list is what the app will play. A userinfo, a non-443 port, or an
+    # extra DNS label is not the ESPN host, even when the rest of the URL looks right.
+    from routes.var_clips import _https_url
+
+    host = "espnmedia-cdn.akamaized.net"
+    assert _https_url(f"https://{host}/a.mp4", {host}) == f"https://{host}/a.mp4"
+    assert _https_url(f"https://{host}:443/a.mp4", {host}) == f"https://{host}:443/a.mp4"
+    assert _https_url(f"https://user:pw@{host}/a.mp4", {host}) is None
+    assert _https_url(f"https://:pw@{host}/a.mp4", {host}) is None
+    assert _https_url(f"https://{host}:444/a.mp4", {host}) is None
+    assert _https_url(f"https://{host}.evil.example/a.mp4", {host}) is None
+    assert _https_url(f"http://{host}/a.mp4", {host}) is None
+    assert _https_url(["https://" + host + "/a.mp4"], {host}) is None
+    pages = {"www.espn.com", "espn.com"}
+    assert _https_url("https://espn.com/video/1", pages) == "https://espn.com/video/1"
+    assert _https_url("https://www.espn.com.evil.example/video/1", pages) is None
+
+    evil = "https://user:pw@espnmedia-cdn.akamaized.net/private.mp4"
+    page = "https://www.espn.com/video/clip?id=7"
+    data = {"videos": [
+        {"id": 7, "headline": "Offside", "duration": 20, "links": {
+            "source": {"href": evil}, "web": {"href": page},
+        }},
+        {"id": 8, "headline": "Other", "duration": 20, "links": {
+            "source": {"href": "https://espnmedia-cdn.akamaized.net.evil.example/x.mp4"},
+            "web": {"href": "https://www.espn.com.evil.example/v"},
+        }},
+        {"id": 9, "headline": "List", "duration": 20, "links": {
+            "source": {"href": ["https://espnmedia-cdn.akamaized.net/a.mp4"]},
+        }},
+    ]}
+    with patch("routes.var_clips.requests.get", return_value=response(data)):
+        result = client.get("/var/clips?league=PD&event=748192")
+    assert result.status_code == 200
+    clips = result.json["clips"]
+    assert [c["id"] for c in clips] == ["7"]
+    assert clips[0]["source_url"] is None
+    assert clips[0]["page_url"] == page
+
+
 def test_clips_keep_provenance_without_claiming_analysis(client):
     source = "https://espnmedia-cdn.akamaized.net/espn/example.mp4"
     data = {"videos": [{"id": 42, "headline": "Highlights", "duration": 74, "links": {

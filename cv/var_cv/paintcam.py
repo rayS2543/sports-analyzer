@@ -43,7 +43,7 @@ def detect_lines(masks, min_px=MIN_LINE_PX, max_lines=MAX_LINES):
         img = np.zeros(skel.shape, np.uint8)
         img[P[:, 1].astype(int), P[:, 0].astype(int)] = 255
         found = cv2.HoughLines(img, 1, np.pi / 720, min_px)
-        if found is None:
+        if found is None or len(found) == 0:  # OpenCV 4 returns None; OpenCV 5 an empty array
             break
         rho, th = found[0][0]
         n = np.array([math.cos(th), math.sin(th)])

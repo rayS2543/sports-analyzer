@@ -165,3 +165,32 @@ def test_plain_association_has_no_velocity_or_kit_gates():
     ids = track.assign_ids(frames, tangles=False)
     assert list(ids[-1]) != list(ids[0])
     assert list(track.assign_ids(frames)[-1]) == list(track.assign_ids(frames)[0])
+
+
+def test_a_mirrored_camera_is_rejected_and_a_horizon_does_not_crash():
+    # Paint-line calibration uses this to drop a homography that flips the pitch.
+    # A flip swaps the two goals, so every offside and foul metre would point the wrong way.
+    H = np.linalg.inv(camera())
+    shape = (H_IMG, W)
+    assert pitch.orientation_ok(H, shape)
+    mirror = H @ np.array([[-1.0, 0.0, W], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+    assert not pitch.orientation_ok(mirror, shape)
+    assert not pitch.orientation_ok(np.zeros((3, 3)), shape)
+
+
+def test_pitch_dimensions_move_the_markings_and_are_restored():
+    # Every homography and offside line is in these metres. A 100 x 64 pitch must not
+    # keep the 105 m halfway line or a penalty box measured from the old far goal.
+    try:
+        pitch.set_dimensions(100, 64)
+        assert (pitch.LENGTH, pitch.WIDTH) == (100.0, 64.0)
+        cy = pitch.WIDTH / 2
+        assert any(np.allclose(v, (50.0, 0.0)) for v in pitch.VERTICES)
+        assert any(np.allclose(v, (50.0, 64.0)) for v in pitch.VERTICES)
+        assert any(np.allclose(v, (pitch.BOX_L, cy - pitch.BOX_W / 2)) for v in pitch.VERTICES)
+        assert any(np.allclose(v, (100.0 - pitch.BOX_L, cy + pitch.BOX_W / 2)) for v in pitch.VERTICES)
+        assert pitch.SAMPLES[:, 0].max() == 100.0
+        assert pitch.SAMPLES[:, 1].max() == 64.0
+    finally:
+        pitch.set_dimensions(105, 68)
+    assert pitch.LENGTH == 105.0 and any(np.allclose(v, (52.5, 0.0)) for v in pitch.VERTICES)
