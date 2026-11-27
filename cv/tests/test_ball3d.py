@@ -3,6 +3,7 @@
 import copy
 
 import numpy as np
+import pytest
 
 from var_cv import ball3d
 
@@ -165,6 +166,79 @@ def driven_shot(v0=(28.0, -4.0, 7.0), dt=0.1, T=1.3, k=ball3d.DRAG_K):
         a = -k * np.linalg.norm(v) * v - [0, 0, ball3d.G]
         v, p, s = v + a * 0.001, p + v * 0.001, s + 0.001
     return out
+
+
+def test_a_ball_faster_than_a_shot_is_left_unfitted():
+    """60 m/s is not a football (the gate is 45). A 12 m/s roll of the same length is."""
+    def models(step):
+        traj = [(round(0.1 * i, 3), (20.0 + step * i, 34.0, 0.0)) for i in range(12)]
+        an = make_analysis(traj, np.random.default_rng(7), noise=0.3, cal_m=0.05)
+        ball3d.apply(an)
+        return [f["ball"]["height_model"] for f in an["frames"]]
+
+    assert models(6.0) == ["unfitted"] * 12
+    assert models(1.2) == ["rolling"] * 12
+
+
+def test_four_sightings_cannot_carry_a_flight_and_five_can_roll():
+    def models(n):
+        traj = [(round(0.1 * i, 3), (40.0 + 0.8 * i, 30.0, 0.0)) for i in range(n)]
+        an = make_analysis(traj, np.random.default_rng(8), noise=0.2, cal_m=0.02)
+        ball3d.apply(an)
+        return [f["ball"]["height_model"] for f in an["frames"]]
+
+    assert ball3d.MIN_OBS == 5
+    assert models(4) == ["unfitted"] * 4
+    assert models(5) == ["rolling"] * 5
+
+
+def test_a_camera_one_metre_off_the_grass_does_not_set_a_height(monkeypatch):
+    """Height uses the absolute camera centre. 1.00 m is a failed recovery; 1.01 m is a camera."""
+    assert ball3d._shot_centre([]) is None
+    assert ball3d._shot_centre([None, {"C": np.array([40.0, -20.0, 1.0])}]) is None
+    assert ball3d._shot_centre([{"C": np.array([40.0, -20.0, -1.01])}])[2] == pytest.approx(1.01)
+    mixed = ball3d._shot_centre([
+        {"C": np.array([10.0, 0.0, 20.0])}, {"C": np.array([30.0, 4.0, -24.0])}])
+    assert (mixed[0], mixed[2]) == pytest.approx((20.0, 22.0))
+
+    traj = [(round(0.1 * i, 3), (40.0 + i, 30.0, 0.0)) for i in range(8)]
+    an = make_analysis(traj, np.random.default_rng(0))
+    monkeypatch.setattr(ball3d, "camera_from_homography",
+                        lambda *a, **k: {"C": np.array([40.0, 30.0, 1.0]), "f": 1400.0,
+                                         "R": np.eye(3), "t": np.zeros(3)})
+    ball3d.apply(an)
+    assert all(f["ball"]["z"] is None and f["ball"]["height_model"] == "unfitted" for f in an["frames"])
+    assert an["ball3d"]["shots"] == {}
+
+
+def _flight(time_scale=1.0):
+    """Lofted kick, sampled in real time, stamped onto a video clock (time_scale 2 = half-speed replay)."""
+    vz, vx = 8.0, 6.0
+    duration = 2 * vz / ball3d.G
+    out = []
+    for t in np.arange(0, duration - 1e-9, 0.1):
+        h = max(0.0, vz * t - ball3d.G * t * t / 2)
+        out.append((round(float(t * time_scale), 3), (25.0 + vx * t, 36.0, float(h))))
+    return out, vz * vz / (2 * ball3d.G)
+
+
+def _heights(traj, playback):
+    an = make_analysis(traj, np.random.default_rng(9), noise=0.4, cal_m=0.05)
+    an["shots"] = [{"id": 0, "playback_speed": playback}]
+    ball3d.apply(an)
+    return np.array([np.nan if f["ball"]["z"] is None else f["ball"]["z"] for f in an["frames"]])
+
+
+def test_slow_motion_uses_real_time_gravity():
+    traj, peak = _flight(time_scale=2.0)
+    true = np.array([p[2] for _, p in traj])
+    scaled = _heights(traj, 0.5)
+    assert np.isfinite(scaled).all()
+    assert abs(scaled.max() - peak) < 0.4
+    assert np.sqrt(np.mean((scaled - true) ** 2)) < 0.35
+    # The same pictures, timed as if they were live, are not that flight.
+    live_clock = _heights(traj, 1.0)
+    assert not np.isfinite(live_clock).all() or abs(np.nanmax(live_clock) - peak) > 1.0
 
 
 def test_hard_shot_is_fitted_with_air_drag(monkeypatch):

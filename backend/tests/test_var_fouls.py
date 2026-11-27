@@ -177,6 +177,49 @@ def test_unmeasured_evidence_is_never_guessed_into_a_lean():
     assert all(g["lean"]["reading"] == "no_lean" for g in out["grounds"])
 
 
+def test_law12_counts_an_indicator_only_at_the_reliance_bar():
+    """0.60 is relied on; 0.59 is the same evidence and is not a red card."""
+    assert var_fouls.RELY == 0.6
+    red = var_fouls.serious_foul_play(sfp_ind(
+        studs_showing=I(True, conf=0.6), contact_above_ankle=I(True, conf=0.6)))
+    shy = var_fouls.serious_foul_play(sfp_ind(
+        studs_showing=I(True, conf=0.59), contact_above_ankle=I(True, conf=0.9)))
+    assert red["verdict"] == "red" and shy["verdict"] == "inconclusive"
+
+
+def test_force_thresholds_include_the_stated_speed():
+    """Studs at 5 m/s, and an arm at 3 m/s, are force. A hundredth under either is not."""
+    assert (var_fouls.FAST_MPS, var_fouls.ARM_FORCE_MPS) == (5.0, 3.0)
+    at = var_fouls.serious_foul_play(sfp_ind(studs_showing=I(True), challenger_speed=I(5.0)))
+    under = var_fouls.serious_foul_play(sfp_ind(studs_showing=I(True), challenger_speed=I(4.99)))
+    assert at["verdict"] == "red" and under["verdict"] == "inconclusive"
+    arm = lambda v: sfp_ind(off_ball_strike=I(True, arm_speed_mps=v), challenging_for_ball=I(False))
+    assert var_fouls.violent_conduct(arm(3.0))["verdict"] == "red"
+    assert var_fouls.violent_conduct(arm(2.99))["verdict"] == "inconclusive"
+
+
+def test_dogso_distance_control_and_keeper_keep_their_edges():
+    """30 m can still be obvious, 40 m is still a judgement, and a keeper intervenes only past 16.5 m."""
+    assert (var_fouls.DOGSO_NEAR_M, var_fouls.DOGSO_FAR_M, var_fouls.CONTROL_M, var_fouls.NO_CONTROL_M) == (30.0, 40.0, 2.5, 5.0)
+
+    def goal(distance):
+        return var_fouls.dogso(sfp_ind(), factors(distance_to_goal=I(distance)))["verdict"]
+
+    assert goal(30.0) == "red" and goal(30.01) == "inconclusive"
+    assert goal(40.0) == "inconclusive" and goal(40.01) == "not_red"
+
+    def ball(distance):
+        return var_fouls.dogso(sfp_ind(), factors(control=I(distance)))["verdict"]
+
+    assert ball(2.5) == "red" and ball(5.0) == "inconclusive" and ball(5.01) == "not_red"
+    # Play going across the goal is not an opportunity and is not "away", so it stays a judgement.
+    assert var_fouls.dogso(sfp_ind(), factors(direction_of_play=I("across")))["verdict"] == "inconclusive"
+    keeper = lambda distance: var_fouls.dogso(sfp_ind(), factors(
+        distance_to_goal=I(distance),
+        defenders_between=I(1, outfield=0, goalkeepers=1, corridor_in_view=1.0)))["verdict"]
+    assert keeper(16.5) == "red" and keeper(16.51) == "inconclusive"
+
+
 # ---------- routes ----------
 
 class FakeProcess:
